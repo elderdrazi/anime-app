@@ -1,0 +1,55 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function signedIn() { return request.auth != null; }
+    function me() { return request.auth.uid; }
+
+    // Usernames are unique: each name doc can be claimed once, by its owner.
+    match /usernames/{name} {
+      allow read: if signedIn();
+      allow create: if signedIn() && request.resource.data.uid == me();
+    }
+
+    match /users/{uid} {
+      // Profiles and lists are visible to anyone signed in, which is the point of sharing.
+      allow read: if signedIn();
+      allow create, update: if me() == uid;
+
+      match /entries/{animeId} {
+        allow read: if signedIn();
+        allow write: if me() == uid;
+      }
+
+      match /friends/{fid} {
+        allow read: if signedIn();
+        allow write: if me() == uid;
+        // Accepting a request adds you to the requester's list too, but only if they asked.
+        allow create: if me() == fid
+          && exists(/databases/$(database)/documents/friendRequests/$(uid + '_' + fid));
+      }
+
+      match /notifications/{nid} {
+        allow read, update, delete: if me() == uid;
+        allow create: if signedIn() && request.resource.data.fromUid == me();
+      }
+    }
+
+    match /friendRequests/{rid} {
+      allow read: if signedIn() && (resource.data.from == me() || resource.data.to == me());
+      allow create, update: if signedIn()
+        && request.resource.data.from == me()
+        && rid == me() + '_' + request.resource.data.to;
+    }
+
+    match /suggestions/{sid} {
+      allow read: if signedIn() && me() in resource.data.participants;
+      allow create: if signedIn()
+        && request.resource.data.fromUid == me()
+        && me() in request.resource.data.participants;
+      // Only the person it was suggested to can answer, and only the status changes.
+      allow update: if signedIn()
+        && resource.data.toUid == me()
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status']);
+    }
+  }
+}
