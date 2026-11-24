@@ -10,3 +10,5 @@ build/
 .cxx
 # Firebase config is per-project; keep it out of git
 app/google-services.json
+
+/release/

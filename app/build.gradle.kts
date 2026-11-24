@@ -25,7 +25,10 @@ android {
 
     buildTypes {
         release {
-            isMinifyEnabled = false
+            // R8 strips unused code (mostly the big icon set) to keep the APK small.
+            isMinifyEnabled = true
+            isShrinkResources = true
+            proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
             // Signed with the debug key so the APK can be sideloaded to friends without a keystore.
             signingConfig = signingConfigs.getByName("debug")
         }
