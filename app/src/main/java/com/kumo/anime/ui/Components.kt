@@ -232,6 +232,9 @@ fun Pill(text: String, selected: Boolean, onClick: () -> Unit, outlined: Boolean
             text,
             style = MaterialTheme.typography.labelLarge,
             color = if (selected) OnAccent else TextDim,
+            // A pill never breaks across lines; rows of them scroll sideways instead.
+            maxLines = 1,
+            softWrap = false,
         )
     }
 }

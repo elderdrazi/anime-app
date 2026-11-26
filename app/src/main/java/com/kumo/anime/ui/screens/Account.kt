@@ -51,6 +51,10 @@ import com.kumo.anime.BuildConfig
 import com.kumo.anime.Graph
 import com.kumo.anime.data.Entry
 import com.kumo.anime.data.Session
+import com.kumo.anime.data.UpdateState
+import com.kumo.anime.data.Updater
+import com.kumo.anime.ui.ProgressBar
+import androidx.compose.material3.Button
 import com.kumo.anime.data.WatchStatus
 import com.kumo.anime.data.topRated
 import com.kumo.anime.ui.AnimeCard
@@ -98,6 +102,7 @@ fun AccountScreen(onOpen: (Int) -> Unit, onOpenUser: (String) -> Unit) {
             Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = 16.dp).padding(bottom = 24.dp),
             verticalArrangement = Arrangement.spacedBy(18.dp),
         ) {
+            UpdateCard()
             Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(horizontal = 4.dp)) {
                 Avatar(me.username, me.uid, 68.dp)
                 Spacer(Modifier.width(16.dp))
@@ -167,11 +172,26 @@ fun AccountScreen(onOpen: (Int) -> Unit, onOpenUser: (String) -> Unit) {
                     Text("Sign out")
                 }
             }
-            Text(
-                "Kumo ${BuildConfig.VERSION_NAME}",
-                style = MaterialTheme.typography.labelSmall, color = TextDim,
+            val update by Updater.state.collectAsStateWithLifecycle()
+            TextButton(
+                onClick = {
+                    scope.launch {
+                        Updater.check(loud = true)
+                        when (val now = Updater.state.value) {
+                            UpdateState.Current -> snackbar.showSnackbar("You're on the latest version.")
+                            is UpdateState.Failed -> snackbar.showSnackbar(now.message)
+                            else -> {}
+                        }
+                    }
+                },
+                enabled = update !is UpdateState.Checking && update !is UpdateState.Downloading,
                 modifier = Modifier.align(Alignment.CenterHorizontally),
-            )
+            ) {
+                Text(
+                    if (update is UpdateState.Checking) "Checking for updates…" else "Kumo ${BuildConfig.VERSION_NAME} · Check for updates",
+                    style = MaterialTheme.typography.labelMedium,
+                )
+            }
         }
     }
 
@@ -196,6 +216,42 @@ fun AccountScreen(onOpen: (Int) -> Unit, onOpenUser: (String) -> Unit) {
             confirmButton = { TextButton(onClick = { confirmSignOut = false; social.signOut() }) { Text("Sign out") } },
             dismissButton = { TextButton(onClick = { confirmSignOut = false }) { Text("Cancel") } },
         )
+    }
+}
+
+/** Appears only when a newer version is out. One tap downloads it and opens Android's install prompt. */
+@Composable
+private fun UpdateCard() {
+    val state by Updater.state.collectAsStateWithLifecycle()
+    val ctx = LocalContext.current.applicationContext
+    val scope = rememberCoroutineScope()
+    val update = when (val s = state) {
+        is UpdateState.Available -> s
+        is UpdateState.Downloading -> s.update
+        is UpdateState.Failed -> s.update
+        else -> null
+    } ?: return
+    val downloading = state as? UpdateState.Downloading
+    Card {
+        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text("Kumo ${update.version} is out", style = MaterialTheme.typography.titleSmall)
+                    Text(
+                        (state as? UpdateState.Failed)?.message
+                            ?: if (downloading != null) "Downloading…" else "You have ${BuildConfig.VERSION_NAME}. Your list stays as it is.",
+                        style = MaterialTheme.typography.bodySmall, color = TextDim,
+                    )
+                }
+                Spacer(Modifier.width(12.dp))
+                Button(
+                    onClick = { scope.launch { Updater.install(ctx, update) } },
+                    enabled = downloading == null,
+                    shape = RoundedCornerShape(10.dp),
+                ) { Text(if (state is UpdateState.Failed) "Retry" else "Update") }
+            }
+            if (downloading != null) ProgressBar(downloading.fraction, Modifier.fillMaxWidth())
+        }
     }
 }
 

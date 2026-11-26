@@ -4,7 +4,8 @@ An Android app for sharing what anime you've watched, what you want to watch, an
 
 - **Discover:** every anime on AniList, one card per show. Sort by Popular, Trending, Top rated, Airing or Upcoming, filter by genre or theme (Isekai, Shounen, School and so on), or search. Each show has its cover art, banner and full synopsis.
 - **Seasons in one place:** AniList lists every season, film and special separately. Kumo follows their prequel/sequel links and folds them into one show, listed in release order on the show's page.
-- **My list:** Want to watch, Watching and Watched. The episode tracker runs across the whole show ("Season 2 · Episode 5"), and tapping a season jumps to it. Reaching the last released episode marks a show watched.
+- **My list:** Want to watch, Watching and Watched. Each season, film and OVA is ticked on its own, so you can skip an OVA between two seasons. The tracker follows the furthest point you've reached ("Season 2 · Episode 5"), and finishing the newest released season marks a show watched.
+- **Updates from inside the app:** Kumo checks GitHub for a newer release at launch. The Profile tab shows an Update button that downloads it and opens Android's install prompt.
 - **Recommend:** send a show to a friend with a note; they can add it to their list from the inbox.
 - **Ratings and top ten:** score any show you've started from 1 to 100. Your ten highest appear on your profile.
 - **Profile:** your username, member-since date, list counts and top ten, with an optional email so the account survives a new phone. Friends see a separate public profile with only your lists and top ten; your email is never stored where they can read it.

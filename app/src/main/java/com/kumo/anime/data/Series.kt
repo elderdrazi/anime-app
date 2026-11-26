@@ -11,6 +11,8 @@ data class Part(
     /** Episode count, or null when it isn't known yet. */
     val episodes: Int?,
     val released: Boolean,
+    /** A proper season, as opposed to a film, OVA or special that people often skip. */
+    val season: Boolean = true,
 ) {
     val meta: String
         get() = listOfNotNull(
@@ -20,12 +22,14 @@ data class Part(
         ).joinToString(" · ")
 }
 
-/** Where an episode count lands inside a show. */
+/** The furthest point someone has reached in a show: which part, and which episode of it. */
 data class Position(val index: Int, val part: Part, val episode: Int, val of: Int?)
 
 /**
  * A whole show: every season, film and special in release order.
- * Progress through it is one running count of episodes watched across all of them.
+ *
+ * What someone has watched is kept per part, as a map of part id to episodes seen. That lets a
+ * film or OVA in the middle stay unwatched while the seasons around it are done.
  */
 class Series(val id: Int, val parts: List<Part>) {
     val memberIds: Set<Int> = parts.map { it.id }.toSet()
@@ -41,37 +45,101 @@ class Series(val id: Int, val parts: List<Part>) {
 
     val multi: Boolean get() = parts.size > 1
 
-    fun offsetOf(index: Int): Int = lengths.take(index).sumOf { it ?: 0 }
-
     fun lengthOf(index: Int): Int? = lengths.getOrNull(index)
 
-    fun clamp(progress: Int): Int = total?.let { progress.coerceIn(0, it) } ?: progress.coerceAtLeast(0)
-
-    /** The season and episode that a running count of [progress] episodes ends on. */
-    fun locate(progress: Int): Position? {
-        if (progress <= 0 || watchable.isEmpty()) return null
-        var before = 0
-        watchable.forEachIndexed { i, p ->
-            val len = lengths[i]
-            if (len == null || progress <= before + len) return Position(i, p, progress - before, len)
-            before += len
+    /**
+     * What's been seen, part by part. Entries saved before 1.3 only kept one running count, which is
+     * read as "watched everything in order up to there".
+     */
+    fun seenOf(saved: Map<Int, Int>?, count: Int): Map<Int, Int> {
+        val out = LinkedHashMap<Int, Int>()
+        if (saved != null) {
+            watchable.forEachIndexed { i, p ->
+                val v = (saved[p.id] ?: 0).let { v -> lengths[i]?.let { v.coerceAtMost(it) } ?: v }
+                if (v > 0) out[p.id] = v
+            }
+            return out
         }
+        var left = count
+        watchable.forEachIndexed { i, p ->
+            val take = lengths[i]?.let { minOf(left, it) } ?: left
+            if (take > 0) out[p.id] = take
+            left -= take
+        }
+        return out
+    }
+
+    /** Total episodes seen, for progress bars and comparing with friends. */
+    fun count(seen: Map<Int, Int>): Int = watchable.sumOf { seen[it.id] ?: 0 }
+
+    private fun furthest(seen: Map<Int, Int>): Int = watchable.indexOfLast { (seen[it.id] ?: 0) > 0 }
+
+    fun position(seen: Map<Int, Int>): Position? {
+        val i = furthest(seen)
+        if (i < 0) return null
+        return Position(i, watchable[i], seen[watchable[i].id] ?: 0, lengths[i])
+    }
+
+    /** Caught up: the newest released part is finished. Skipped films and OVAs don't hold this back. */
+    fun isComplete(seen: Map<Int, Int>): Boolean {
         val last = watchable.lastIndex
-        return Position(last, watchable[last], lengths[last] ?: 0, lengths[last])
+        if (last < 0) return false
+        val len = lengths[last] ?: return false
+        return len > 0 && (seen[watchable[last].id] ?: 0) >= len
+    }
+
+    /** Everything released, watched. */
+    fun all(): Map<Int, Int> {
+        val out = LinkedHashMap<Int, Int>()
+        watchable.forEachIndexed { i, p -> lengths[i]?.takeIf { it > 0 }?.let { out[p.id] = it } }
+        return out
+    }
+
+    /**
+     * Sets how much of one part has been seen, leaving the others alone. When that starts a later
+     * season, earlier seasons nobody has ticked are filled in too. Films, OVAs and specials never
+     * are: skipping those is normal, so they only count when ticked.
+     */
+    fun withPart(seen: Map<Int, Int>, index: Int, episodes: Int, fillEarlier: Boolean = true): Map<Int, Int> {
+        val part = watchable.getOrNull(index) ?: return seen
+        val out = LinkedHashMap(seen)
+        val v = lengths[index]?.let { episodes.coerceIn(0, it) } ?: episodes.coerceAtLeast(0)
+        if (v == 0) out.remove(part.id) else out[part.id] = v
+        if (v > 0 && fillEarlier) {
+            for (j in 0 until index) {
+                val p = watchable[j]
+                val len = lengths[j] ?: continue
+                if (p.season && len > 0 && (out[p.id] ?: 0) == 0) out[p.id] = len
+            }
+        }
+        return out
+    }
+
+    /** One episode forward or back from the furthest point reached, rolling into the next part at the end of one. */
+    fun step(seen: Map<Int, Int>, delta: Int): Map<Int, Int> {
+        val i = furthest(seen)
+        if (i < 0) return if (delta > 0) withPart(seen, 0, 1, fillEarlier = false) else seen
+        val now = seen[watchable[i].id] ?: 0
+        val len = lengths[i]
+        return if (delta > 0 && len != null && now >= len) {
+            if (i < watchable.lastIndex) withPart(seen, i + 1, 1, fillEarlier = false) else seen
+        } else {
+            withPart(seen, i, now + delta, fillEarlier = false)
+        }
     }
 
     /** One-line position for lists, like "Season 2 · Ep 5". Null for single-season shows. */
-    fun label(progress: Int): String? {
+    fun label(seen: Map<Int, Int>): String? {
         if (!multi) return null
-        val pos = locate(progress) ?: return null
+        val pos = position(seen) ?: return null
         if (pos.of == 1) return pos.part.label
         // Keep the episode visible when the season name is long enough to be cut off.
         return if (pos.part.label.length <= 10) "${pos.part.label} · Ep ${pos.episode}" else "Ep ${pos.episode} · ${pos.part.label}"
     }
 
-    /** Position for notifications and friend rows, like "Season 2, episode 5". */
-    fun describe(progress: Int): String {
-        val pos = locate(progress) ?: return "Not started"
+    /** Position for notifications, like "Season 2, episode 5". */
+    fun describe(seen: Map<Int, Int>): String {
+        val pos = position(seen) ?: return "Not started"
         return when {
             !multi -> "Episode ${pos.episode}"
             pos.of == 1 -> pos.part.label
@@ -95,8 +163,9 @@ fun buildSeries(root: Anime, members: List<Anime>): Series {
             },
             format = a.format,
             year = a.year,
-            episodes = a.episodes ?: a.aired?.takeIf { a.status == "FINISHED" },
+            episodes = a.episodes,
             released = a.status != "NOT_YET_RELEASED",
+            season = a.isSeries,
         )
     }
     return Series(root.id, parts)

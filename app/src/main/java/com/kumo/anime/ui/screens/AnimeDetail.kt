@@ -166,8 +166,11 @@ private fun DetailContent(anime: Anime, onOpenUser: (String) -> Unit) {
     var settingPart by remember { mutableStateOf<Int?>(null) }
     var expanded by remember { mutableStateOf(false) }
     var rating by remember { mutableStateOf(false) }
-    val progress = entry?.progress ?: 0
-    val position = series.locate(progress)
+    // What you've seen of each season, film and special.
+    val watched = remember(entry, series) {
+        if (entry == null || entry.status == WatchStatus.PLANNED) emptyMap() else series.seenOf(entry.seen, entry.progress)
+    }
+    val position = series.position(watched)
 
     fun act(block: suspend (Series) -> Unit) {
         if (!signedIn) {
@@ -247,9 +250,9 @@ private fun DetailContent(anime: Anime, onOpenUser: (String) -> Unit) {
             if (entry?.status == WatchStatus.WATCHING || friendEntries.any { it.entry.status == WatchStatus.WATCHING }) {
                 EpisodeTracker(
                     series = series,
-                    myProgress = entry?.progress?.takeIf { entry.status == WatchStatus.WATCHING },
+                    mine = watched.takeIf { entry?.status == WatchStatus.WATCHING },
                     friends = friendEntries,
-                    onStep = { d -> act { s -> social.setProgress(anime, s, progress + d, friendEntries) } },
+                    onStep = { d -> act { s -> social.setProgress(anime, s, s.step(social.seenFor(anime, s), d), friendEntries) } },
                     onSetExact = { settingPart = position?.index ?: 0 },
                     onOpenUser = onOpenUser,
                 )
@@ -274,8 +277,14 @@ private fun DetailContent(anime: Anime, onOpenUser: (String) -> Unit) {
             if (series.multi) {
                 SeasonList(
                     series = series,
-                    progress = if (entry == null || entry.status == WatchStatus.PLANNED) 0 else progress,
+                    watched = watched,
                     onPick = { i -> if (signedIn) settingPart = i },
+                    onToggle = { i, tick ->
+                        act { s ->
+                            val episodes = if (tick) s.lengthOf(i) ?: 0 else 0
+                            social.setProgress(anime, s, s.withPart(social.seenFor(anime, s), i, episodes), friendEntries)
+                        }
+                    },
                 )
             }
 
@@ -348,12 +357,12 @@ private fun DetailContent(anime: Anime, onOpenUser: (String) -> Unit) {
             SetEpisodeDialog(
                 title = if (series.multi) "${part.label}: which episode?" else "Which episode are you on?",
                 // Opens on your episode in the season you're on, or the whole season for any other.
-                current = position?.takeIf { it.index == index }?.episode ?: length ?: 1,
+                current = watched[part.id]?.takeIf { it > 0 } ?: length ?: 1,
                 total = length,
                 onDismiss = { settingPart = null },
                 onSet = { ep ->
                     settingPart = null
-                    act { s -> social.setProgress(anime, s, s.offsetOf(index) + (s.lengthOf(index)?.let { ep.coerceAtMost(it) } ?: ep), friendEntries) }
+                    act { s -> social.setProgress(anime, s, s.withPart(social.seenFor(anime, s), index, ep), friendEntries) }
                 },
             )
         }
@@ -428,7 +437,7 @@ private enum class SendKind(val title: String, val icon: ImageVector, val blurb:
 }
 
 @Composable
-private fun SeasonList(series: Series, progress: Int, onPick: (Int) -> Unit) {
+private fun SeasonList(series: Series, watched: Map<Int, Int>, onPick: (Int) -> Unit, onToggle: (Int, Boolean) -> Unit) {
     Card(padding = PaddingValues(vertical = 6.dp)) {
         Column {
             Text(
@@ -440,35 +449,49 @@ private fun SeasonList(series: Series, progress: Int, onPick: (Int) -> Unit) {
             series.parts.forEach { part ->
                 val index = series.watchable.indexOf(part)
                 val length = series.lengthOf(index)
-                val seen = if (index < 0) 0 else (progress - series.offsetOf(index)).coerceAtLeast(0)
-                val done = index >= 0 && length != null && seen >= length && progress > 0
+                val seen = watched[part.id] ?: 0
+                val done = index >= 0 && length != null && length > 0 && seen >= length
                 val current = index >= 0 && !done && seen > 0
+                // The row sets an episode; the circle ticks or unticks just this part.
                 Row(
                     Modifier.fillMaxWidth()
                         .then(if (index >= 0) Modifier.clickable { onPick(index) } else Modifier)
-                        .padding(horizontal = 14.dp, vertical = 9.dp),
+                        .padding(start = 4.dp, end = 14.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    Icon(
-                        when {
-                            done -> Icons.Outlined.CheckCircle
-                            current -> Icons.Outlined.PlayCircle
-                            else -> Icons.Outlined.RadioButtonUnchecked
-                        },
-                        contentDescription = when {
-                            done -> "Watched"
-                            current -> "In progress"
-                            else -> null
-                        },
-                        tint = when {
-                            done -> Mint
-                            current -> Accent
-                            else -> Hairline
-                        },
-                        modifier = Modifier.size(20.dp),
-                    )
-                    Spacer(Modifier.width(12.dp))
-                    Column(Modifier.weight(1f)) {
+                    Box(
+                        Modifier.size(44.dp).clip(CircleShape)
+                            .then(
+                                when {
+                                    index < 0 -> Modifier
+                                    // A season still airing has no last episode to tick to, so ask for one.
+                                    length == null -> Modifier.clickable { onPick(index) }
+                                    else -> Modifier.clickable { onToggle(index, !done) }
+                                },
+                            ),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Icon(
+                            when {
+                                done -> Icons.Outlined.CheckCircle
+                                current -> Icons.Outlined.PlayCircle
+                                else -> Icons.Outlined.RadioButtonUnchecked
+                            },
+                            contentDescription = when {
+                                done -> "Watched. Tap to untick ${part.label}"
+                                index >= 0 -> "Tick ${part.label} as watched"
+                                else -> null
+                            },
+                            tint = when {
+                                done -> Mint
+                                current -> Accent
+                                else -> Hairline
+                            },
+                            modifier = Modifier.size(22.dp),
+                        )
+                    }
+                    Spacer(Modifier.width(2.dp))
+                    Column(Modifier.weight(1f).padding(vertical = 9.dp)) {
                         Text(
                             part.label,
                             style = MaterialTheme.typography.labelLarge,
@@ -515,19 +538,21 @@ private fun StatusChoice(status: WatchStatus, selected: Boolean, modifier: Modif
 @Composable
 private fun EpisodeTracker(
     series: Series,
-    myProgress: Int?,
+    /** What you've seen, part by part, or null when you aren't watching it yourself. */
+    mine: Map<Int, Int>?,
     friends: List<FriendEntry>,
     onStep: (Int) -> Unit,
     onSetExact: () -> Unit,
     onOpenUser: (String) -> Unit,
 ) {
     val total = series.total
+    val myProgress = mine?.let { series.count(it) }
     // Unknown total (still airing): scale bars against the furthest anyone has got.
     val scaleMax = (total ?: (listOfNotNull(myProgress) + friends.map { it.entry.progress }).maxOrNull() ?: 1).coerceAtLeast(1)
     Card {
         Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-            if (myProgress != null) {
-                val pos = series.locate(myProgress)
+            if (mine != null && myProgress != null) {
+                val pos = series.position(mine)
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Column(Modifier.weight(1f).clickable(onClick = onSetExact)) {
                         if (series.multi) {
@@ -566,7 +591,7 @@ private fun EpisodeTracker(
                         ProgressBar(ep / scaleMax.toFloat(), Modifier.weight(1f), color = personColor(fe.friend.uid).first)
                         Spacer(Modifier.width(10.dp))
                         Text(
-                            if (done) "done" else series.label(ep) ?: "ep $ep",
+                            if (done) "done" else fe.entry.label ?: "ep $ep",
                             style = MaterialTheme.typography.labelMedium,
                             color = TextDim,
                             maxLines = 1,

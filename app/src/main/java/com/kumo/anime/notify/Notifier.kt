@@ -15,13 +15,43 @@ import com.kumo.anime.data.NoticeType
 
 object Notifier {
     private const val CHANNEL = "social"
+    private const val UPDATES = "updates"
+    private const val UPDATE_ID = 9001
     private const val PREFS = "notifier"
     private const val KEY_LAST = "lastNotified"
 
     fun createChannel(ctx: Context) {
         val ch = NotificationChannel(CHANNEL, "Friends and suggestions", NotificationManager.IMPORTANCE_DEFAULT)
         ch.description = "Friend requests, watch-together suggestions and progress updates"
-        ctx.getSystemService(NotificationManager::class.java).createNotificationChannel(ch)
+        val nm = ctx.getSystemService(NotificationManager::class.java)
+        nm.createNotificationChannel(ch)
+        // Its own channel, so people can keep friend activity on and turn update notices off, or the reverse.
+        val updates = NotificationChannel(UPDATES, "App updates", NotificationManager.IMPORTANCE_DEFAULT)
+        updates.description = "Tells you when a new version of Kumo is ready"
+        nm.createNotificationChannel(updates)
+    }
+
+    /** "A new version is out", shown once per version. Tapping it opens the Profile tab, where the Update button is. */
+    @SuppressLint("MissingPermission")
+    fun showUpdate(ctx: Context, version: String): Boolean {
+        val nm = NotificationManagerCompat.from(ctx)
+        // Not shown counts as not told, so it's tried again once notifications are allowed.
+        if (!nm.areNotificationsEnabled()) return false
+        val intent = Intent(ctx, MainActivity::class.java)
+            .addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP)
+            .putExtra(MainActivity.EXTRA_OPEN, MainActivity.OPEN_PROFILE)
+        val pi = PendingIntent.getActivity(ctx, 1, intent, PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
+        val body = "Tap to update. Your list stays as it is."
+        val notification = NotificationCompat.Builder(ctx, UPDATES)
+            .setSmallIcon(R.drawable.ic_stat_kumo)
+            .setColor(0xFFB4A5FF.toInt())
+            .setContentTitle("Kumo $version is out")
+            .setContentText(body)
+            .setContentIntent(pi)
+            .setAutoCancel(true)
+            .build()
+        nm.notify(UPDATE_ID, notification)
+        return true
     }
 
     fun lastNotified(ctx: Context): Long =

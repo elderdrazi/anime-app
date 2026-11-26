@@ -63,7 +63,15 @@ import androidx.navigation.navArgument
 import com.kumo.anime.Graph
 import com.kumo.anime.MainActivity
 import com.kumo.anime.data.Session
+import com.kumo.anime.data.UpdateState
+import com.kumo.anime.data.Updater
 import androidx.compose.material.icons.outlined.Person
+import androidx.compose.material.icons.outlined.Close
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Row
+import androidx.compose.material3.IconButton
+import androidx.compose.ui.platform.LocalContext
+import com.kumo.anime.ui.theme.Surface2
 import com.kumo.anime.ui.screens.AccountScreen
 import com.kumo.anime.ui.screens.CredentialsDialog
 import com.kumo.anime.ui.screens.AnimeDetailScreen
@@ -116,6 +124,11 @@ private fun MainScaffold(pending: StateFlow<Intent?>, onHandled: () -> Unit) {
     val backStack by nav.currentBackStackEntryAsState()
     val route = backStack?.destination?.route
     val showBar = tabs.any { it.route == route }
+    val update by Updater.state.collectAsStateWithLifecycle()
+    val updateReady = update is UpdateState.Available || update is UpdateState.Downloading
+    LaunchedEffect(Unit) { Updater.check() }
+    // The version whose banner was closed. It stays closed until the app is next opened.
+    var bannerHidden by rememberSaveable { mutableStateOf<String?>(null) }
 
     // Ask for notification permission once the account exists (Android 13+).
     val permission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) {}
@@ -130,6 +143,9 @@ private fun MainScaffold(pending: StateFlow<Intent?>, onHandled: () -> Unit) {
         val data = i.data
         if (i.getStringExtra(MainActivity.EXTRA_OPEN) == MainActivity.OPEN_INBOX) {
             nav.goTab("inbox")
+        } else if (i.getStringExtra(MainActivity.EXTRA_OPEN) == MainActivity.OPEN_PROFILE) {
+            // From the "new version" notification: the Update button lives on Profile.
+            nav.goTab("me")
         } else if (data?.scheme == "kumo" && data.host == "u" && social.enabled) {
             val name = data.lastPathSegment
             val profile = name?.let { runCatching { social.findUser(it) }.getOrNull() }
@@ -146,6 +162,8 @@ private fun MainScaffold(pending: StateFlow<Intent?>, onHandled: () -> Unit) {
             bottomBar = {
                 if (showBar) {
                     Column {
+                        // Profile already shows the update card, so the banner covers the other tabs.
+                        if (route != "me") UpdateBanner(update, bannerHidden) { bannerHidden = it }
                         HorizontalDivider(color = Hairline, thickness = 0.5.dp)
                         NavigationBar(containerColor = Bg, tonalElevation = 0.dp) {
                             tabs.forEach { tab ->
@@ -156,6 +174,11 @@ private fun MainScaffold(pending: StateFlow<Intent?>, onHandled: () -> Unit) {
                                         if (tab.route == "inbox" && unread > 0) {
                                             BadgedBox(badge = { Badge(containerColor = Accent) { Text("$unread") } }) {
                                                 Icon(tab.icon, tab.label)
+                                            }
+                                        } else if (tab.route == "me" && updateReady) {
+                                            // A dot on Profile says a new version is waiting there.
+                                            BadgedBox(badge = { Badge(containerColor = Accent) }) {
+                                                Icon(tab.icon, "${tab.label}, update available")
                                             }
                                         } else {
                                             Icon(tab.icon, tab.label)
@@ -198,6 +221,46 @@ private fun MainScaffold(pending: StateFlow<Intent?>, onHandled: () -> Unit) {
                         onOpen = openAnime,
                     )
                 }
+            }
+        }
+    }
+}
+
+/** A strip above the tab bar on every tab while a newer version is waiting. */
+@Composable
+private fun UpdateBanner(state: UpdateState, hidden: String?, onHide: (String) -> Unit) {
+    val update = when (state) {
+        is UpdateState.Available -> state
+        is UpdateState.Downloading -> state.update
+        is UpdateState.Failed -> state.update
+        else -> null
+    } ?: return
+    val downloading = state as? UpdateState.Downloading
+    // Closing it hides it, but never mid-download.
+    if (hidden == update.version && downloading == null) return
+    val ctx = LocalContext.current.applicationContext
+    val scope = rememberCoroutineScope()
+    Row(
+        Modifier.fillMaxWidth().background(Surface2).padding(start = 16.dp, end = 4.dp, top = 6.dp, bottom = 6.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Column(Modifier.weight(1f)) {
+            Text("Kumo ${update.version} is out", style = MaterialTheme.typography.labelLarge)
+            Text(
+                when {
+                    downloading != null -> "Downloading… ${(downloading.fraction * 100).toInt()}%"
+                    state is UpdateState.Failed -> "The download didn't finish. Try again."
+                    else -> "Your list stays as it is."
+                },
+                style = MaterialTheme.typography.labelSmall, color = TextDim,
+            )
+        }
+        TextButton(onClick = { scope.launch { Updater.install(ctx, update) } }, enabled = downloading == null) {
+            Text(if (state is UpdateState.Failed) "Retry" else "Update")
+        }
+        if (downloading == null) {
+            IconButton(onClick = { onHide(update.version) }) {
+                Icon(Icons.Outlined.Close, "Hide until next time", tint = TextDim, modifier = Modifier.size(18.dp))
             }
         }
     }

@@ -4,7 +4,7 @@ import android.app.Application
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.ProcessLifecycleOwner
 import com.kumo.anime.data.Social
-import com.kumo.anime.notify.InboxWorker
+import com.kumo.anime.notify.CheckJob
 import com.kumo.anime.notify.Notifier
 import kotlinx.coroutines.MainScope
 import kotlinx.coroutines.launch
@@ -25,10 +25,11 @@ class KumoApp : Application() {
         super.onCreate()
         Graph.init(this)
         Notifier.createChannel(this)
+        // The background check covers new versions as well as the inbox, so it runs either way.
+        CheckJob.schedule(this)
         if (Graph.social.enabled) {
-            InboxWorker.schedule(this)
             // While the process is alive, new inbox items become system notifications
-            // whenever the app isn't on screen. The worker covers the rest.
+            // whenever the app isn't on screen. The background check covers the rest.
             MainScope().launch {
                 Graph.social.notices.collect { list ->
                     val onScreen = ProcessLifecycleOwner.get().lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)

@@ -62,6 +62,8 @@ data class Entry(
     val whole: Boolean = false,
     /** Your own score for the show, 1 to 100. */
     val rating: Int? = null,
+    /** Episodes seen in each season, film or special, by its id. Null on entries saved before 1.3. */
+    val seen: Map<Int, Int>? = null,
 )
 
 /** A person's best-rated shows, highest first. */
@@ -290,45 +292,51 @@ class Social(private val app: Context) {
         if (found.isEmpty()) return null
         val own = found.firstOrNull { it.animeId == show.id }
         if (series == null || (found.size == 1 && own?.whole == true)) return own
-        var progress = 0
+        val seen = HashMap<Int, Int>()
         for (e in found) {
-            val reached = if (e.whole && e.animeId == show.id) {
-                e.progress
+            if (e.whole && e.animeId == show.id) {
+                series.seenOf(e.seen, e.progress).forEach { (k, v) -> seen[k] = maxOf(seen[k] ?: 0, v) }
             } else {
+                // A 1.0 entry covers just its own season.
                 val i = series.watchable.indexOfFirst { it.id == e.animeId }
-                when {
-                    i < 0 || e.status == WatchStatus.PLANNED -> 0
-                    e.status == WatchStatus.WATCHED -> series.offsetOf(i) + (series.lengthOf(i) ?: e.progress)
-                    e.progress > 0 -> series.offsetOf(i) + e.progress
-                    else -> 0
-                }
+                if (i < 0 || e.status == WatchStatus.PLANNED) continue
+                val len = series.lengthOf(i)
+                val v = if (e.status == WatchStatus.WATCHED) len ?: e.progress else len?.let { e.progress.coerceAtMost(it) } ?: e.progress
+                if (v > 0) seen[e.animeId] = maxOf(seen[e.animeId] ?: 0, v)
             }
-            progress = maxOf(progress, reached)
         }
-        progress = series.clamp(progress)
-        val total = series.total
         val status = when {
             found.all { it.status == WatchStatus.PLANNED } -> WatchStatus.PLANNED
-            total != null && total > 0 && progress >= total -> WatchStatus.WATCHED
+            series.isComplete(seen) -> WatchStatus.WATCHED
             else -> WatchStatus.WATCHING
         }
         return Entry(
-            show.id, show.title, show.cover, status, progress, total,
-            found.maxOf { it.updatedAt }, series.label(progress), whole = false,
+            show.id, show.title, show.cover, status, series.count(seen), series.total,
+            found.maxOf { it.updatedAt }, series.label(seen), whole = false,
             rating = own?.rating ?: found.mapNotNull { it.rating }.maxOrNull(),
+            seen = seen,
         )
+    }
+
+    /** What you've seen of a show, part by part. Empty if it isn't started. */
+    fun seenFor(show: Anime, series: Series): Map<Int, Int> {
+        val e = entryFor(show, series) ?: return emptyMap()
+        return if (e.status == WatchStatus.PLANNED) emptyMap() else series.seenOf(e.seen, e.progress)
     }
 
     /** Writes the single entry for a show and clears any per-season ones it replaces. */
     private fun save(
         batch: com.google.firebase.firestore.WriteBatch, uid: String, show: Anime, series: Series,
-        status: WatchStatus, progress: Int, updatedAt: Long = now(),
+        status: WatchStatus, seen: Map<Int, Int>, updatedAt: Long = now(),
         rating: Int? = entryFor(show, series)?.rating,
     ) {
         val docs = entryDocs(uid)
         batch.set(
             docs.document(show.id.toString()),
-            entryMap(show.id, show.title, show.cover, status, progress, series.total, series.label(progress), true, updatedAt, rating),
+            entryMap(
+                show.id, show.title, show.cover, status, series.count(seen), series.total, series.label(seen),
+                true, updatedAt, rating, seen.mapKeys { it.key.toString() },
+            ),
         )
         myEntries.value.filter { it.animeId in series.memberIds && it.animeId != show.id }
             .forEach { batch.delete(docs.document(it.animeId.toString())) }
@@ -344,16 +352,17 @@ class Social(private val app: Context) {
             return
         }
         val old = entryFor(show, series)
-        val total = series.total
-        val progress = when (status) {
-            WatchStatus.WATCHED -> total ?: old?.progress ?: 0
-            WatchStatus.PLANNED -> 0
+        val had = seenFor(show, series)
+        val seen = when (status) {
+            // Marking a show watched ticks everything; anything skipped can be unticked afterwards.
+            WatchStatus.WATCHED -> series.all().ifEmpty { had }
+            WatchStatus.PLANNED -> emptyMap()
             // Picking a finished show back up (a new season came out) carries on from where you were.
-            WatchStatus.WATCHING -> old?.progress?.takeIf {
-                old.status == WatchStatus.WATCHING || (old.status == WatchStatus.WATCHED && total != null && it < total)
-            } ?: 0
+            WatchStatus.WATCHING ->
+                if (old?.status == WatchStatus.WATCHING || (old?.status == WatchStatus.WATCHED && !series.isComplete(had))) had
+                else emptyMap()
         }
-        save(batch, uid, show, series, status, progress)
+        save(batch, uid, show, series, status, seen)
         batch.commit().await()
     }
 
@@ -362,28 +371,27 @@ class Social(private val app: Context) {
         val uid = myUid ?: return
         val e = entryFor(show, series) ?: return
         val batch = db.batch()
-        save(batch, uid, show, series, e.status, e.progress, e.updatedAt, rating?.coerceIn(1, 100))
+        save(batch, uid, show, series, e.status, series.seenOf(e.seen, e.progress), e.updatedAt, rating?.coerceIn(1, 100))
         batch.commit().await()
     }
 
     /**
-     * Sets how many episodes of the show you've seen, counted across all its seasons.
-     * Reaching the last released episode marks it watched, and friends you pass are told.
+     * Saves what you've seen of a show, part by part. Finishing the newest released part marks the
+     * show watched, and friends whose episode count you pass are told.
      */
-    suspend fun setProgress(show: Anime, series: Series, episode: Int, friendEntries: List<FriendEntry>) {
+    suspend fun setProgress(show: Anime, series: Series, seen: Map<Int, Int>, friendEntries: List<FriendEntry>) {
         val uid = myUid ?: return
         val me = me ?: return
-        val total = series.total
-        val ep = series.clamp(episode)
+        val ep = series.count(seen)
         val oldEp = entryFor(show, series)?.progress ?: 0
-        val status = if (total != null && total > 0 && ep >= total) WatchStatus.WATCHED else WatchStatus.WATCHING
+        val status = if (series.isComplete(seen)) WatchStatus.WATCHED else WatchStatus.WATCHING
         val batch = db.batch()
-        save(batch, uid, show, series, status, ep)
+        save(batch, uid, show, series, status, seen)
         friendEntries.filter { it.entry.status == WatchStatus.WATCHING && oldEp < it.entry.progress && ep >= it.entry.progress && it.entry.progress > 0 }
             .forEach { fe ->
                 batch.set(
                     noticeRef(fe.friend.uid),
-                    noticeMap(NoticeType.CAUGHT_UP, me, show.id, show.title, show.cover, series.describe(ep)),
+                    noticeMap(NoticeType.CAUGHT_UP, me, show.id, show.title, show.cover, series.describe(seen)),
                 )
             }
         batch.commit().await()
@@ -413,7 +421,7 @@ class Social(private val app: Context) {
                 val series = AniList.series(showId)
                 val merged = merge(show, series, myEntries.value) ?: return@runCatching
                 val batch = db.batch()
-                save(batch, uid, show, series, merged.status, merged.progress, merged.updatedAt)
+                save(batch, uid, show, series, merged.status, series.seenOf(merged.seen, merged.progress), merged.updatedAt)
                 batch.commit().await()
             }.onFailure { Log.w(TAG, "couldn't upgrade $showId", it) }
         }
@@ -559,10 +567,10 @@ class Social(private val app: Context) {
 
     private fun entryMap(
         id: Int, title: String, cover: String?, status: WatchStatus, progress: Int, total: Int?,
-        label: String?, whole: Boolean, updatedAt: Long, rating: Int? = null,
+        label: String?, whole: Boolean, updatedAt: Long, rating: Int? = null, seen: Map<String, Int>? = null,
     ) = mapOf(
         "animeId" to id, "title" to title, "cover" to cover, "status" to status.key,
-        "progress" to progress, "total" to total, "label" to label, "rating" to rating,
+        "progress" to progress, "total" to total, "label" to label, "rating" to rating, "seen" to seen,
         "v" to if (whole) 2 else 1, "updatedAt" to updatedAt,
     )
 
@@ -591,6 +599,10 @@ class Social(private val app: Context) {
                 label = d.getString("label"),
                 whole = (d.getLong("v") ?: 1) >= 2,
                 rating = d.getLong("rating")?.toInt(),
+                seen = (d.get("seen") as? Map<*, *>)?.mapNotNull { (k, v) ->
+                    val id = (k as? String)?.toIntOrNull() ?: return@mapNotNull null
+                    id to ((v as? Number)?.toInt() ?: return@mapNotNull null)
+                }?.toMap(),
             )
         }
 

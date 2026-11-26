@@ -6,6 +6,3 @@
     kotlinx.serialization.KSerializer serializer(...);
 }
 -keep @kotlinx.serialization.Serializable class com.kumo.anime.data.** { *; }
-
-# WorkManager instantiates the worker by name.
--keep class com.kumo.anime.notify.InboxWorker { <init>(...); }

@@ -1,5 +1,7 @@
 package com.kumo.anime.ui.screens
 
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -94,7 +96,8 @@ fun LibraryScreen(onOpen: (Int) -> Unit) {
 fun entryCaption(e: Entry): String? {
     val where = if (e.status == WatchStatus.WATCHING) e.label ?: progressLabel(e.progress, e.total) else null
     val rated = e.rating?.let { "★ $it" }
-    return listOfNotNull(rated, where).joinToString(" · ").ifEmpty { null }
+    // Where you are comes first, so it's the rating that gets cut off when space is tight.
+    return listOfNotNull(where, rated).joinToString(" · ").ifEmpty { null }
 }
 
 /** Shared by My list and profiles: status pills plus the matching grid. */
@@ -108,7 +111,11 @@ fun LazyGridScope.entryTabs(
 ) {
     val status = ListTabs[tab]
     item(span = { GridItemSpan(maxLineSpan) }) {
-        Row(horizontalArrangement = Arrangement.spacedBy(4.dp), modifier = Modifier.padding(top = 4.dp)) {
+        // Scrolls sideways when the three don't fit, on narrow screens or with large text.
+        Row(
+            horizontalArrangement = Arrangement.spacedBy(4.dp),
+            modifier = Modifier.padding(top = 4.dp).horizontalScroll(rememberScrollState()),
+        ) {
             ListTabs.forEachIndexed { i, st ->
                 val n = entries.count { it.status == st }
                 Pill("${st.label}  $n", tab == i, { onTab(i) }, outlined = false)
