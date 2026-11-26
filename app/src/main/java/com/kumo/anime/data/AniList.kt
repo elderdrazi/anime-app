@@ -108,6 +108,9 @@ data class Show(val anime: Anime, val via: Anime?)
 
 data class ShowPage(val items: List<Show>, val hasNext: Boolean)
 
+/** Someone's AniList list: the username as AniList spells it, and one row per season, film or special. */
+data class UserList(val name: String, val rows: List<ListRow>)
+
 class AniListException(message: String) : Exception(message)
 
 /**
@@ -387,9 +390,84 @@ object AniList {
         node.sequels = sequels
     }
 
+    // ---- someone's own AniList list ----
+
+    /**
+     * A person's public anime list, by their AniList username. No sign-in is involved, so a list
+     * that's set to private can't be read.
+     */
+    suspend fun userList(name: String): UserList {
+        val query = "query (\$name: String, \$chunk: Int) {" +
+            " MediaListCollection(userName: \$name, type: ANIME, chunk: \$chunk, perChunk: 500) {" +
+            " hasNextChunk user { name } lists { entries {" +
+            " mediaId status progress repeat score(format: POINT_100) updatedAt media { isAdult } } } } }"
+        val rows = HashMap<Int, ListRow>()
+        var canonical = name
+        var chunk = 1
+        while (chunk <= 20) {
+            val resp = ask(query, buildJsonObject { put("name", name); put("chunk", chunk) })
+            val list = resp.data?.list
+            if (list == null) {
+                val err = resp.errors?.firstOrNull()
+                throw AniListException(
+                    when {
+                        err?.status == 404 -> "There's no AniList account called \"$name\"."
+                        err?.message?.contains("rivate") == true ->
+                            "That AniList list is private. Make it public in AniList's settings, then try again."
+                        else -> "AniList couldn't share that list. Try again in a minute."
+                    },
+                )
+            }
+            list.user?.name?.takeIf { it.isNotBlank() }?.let { canonical = it }
+            // A show can sit in several of a person's lists at once; it's still one row.
+            for (e in list.lists.flatMap { it.entries }) {
+                val row = ListRow(
+                    e.mediaId, e.status ?: continue, e.progress ?: 0, e.score?.toInt() ?: 0,
+                    e.repeat ?: 0, e.updatedAt ?: 0, e.media?.isAdult == true,
+                )
+                val old = rows[row.mediaId]
+                if (old == null || row.updatedAt > old.updatedAt) rows[row.mediaId] = row
+            }
+            if (!list.hasNextChunk) break
+            chunk++
+        }
+        return UserList(canonical, rows.values.toList())
+    }
+
+    /**
+     * Loads the season links around a batch of entries, 50 a request, until every chain is known.
+     * Sorting a long list into shows this way takes a handful of requests rather than a couple per show.
+     */
+    suspend fun warm(ids: Collection<Int>) {
+        repeat(8) {
+            val reached = HashSet<Int>()
+            val missing = LinkedHashSet<Int>()
+            val queue = ArrayDeque(ids)
+            while (queue.isNotEmpty() && reached.size < 5000) {
+                val id = queue.removeFirst()
+                if (!reached.add(id)) continue
+                val node = nodes[id]
+                val prequels = node?.prequels
+                if (prequels == null) {
+                    missing += id
+                    continue
+                }
+                queue += prequels
+                queue += node.sequels.orEmpty()
+            }
+            if (missing.isEmpty()) return
+            load(missing)
+        }
+    }
+
     // ---- transport ----
 
-    private suspend fun post(query: String, vars: JsonObject): DataDto = withContext(Dispatchers.IO) {
+    private suspend fun post(query: String, vars: JsonObject): DataDto {
+        val resp = ask(query, vars)
+        return resp.data ?: throw AniListException(resp.errors?.firstOrNull()?.message ?: "Empty response")
+    }
+
+    private suspend fun ask(query: String, vars: JsonObject): RespDto = withContext(Dispatchers.IO) {
         val body = buildJsonObject {
             put("query", query)
             put("variables", vars)
@@ -408,10 +486,8 @@ object AniList {
                     r.header("Retry-After")?.toLongOrNull() ?: 30L
                 } else {
                     val text = r.body?.string().orEmpty()
-                    val parsed = runCatching { json.decodeFromString<RespDto>(text) }.getOrNull()
+                    return@withContext runCatching { json.decodeFromString<RespDto>(text) }.getOrNull()
                         ?: throw AniListException("AniList didn't respond properly (${r.code})")
-                    return@withContext parsed.data
-                        ?: throw AniListException(parsed.errors?.firstOrNull()?.message ?: "Empty response")
                 }
             }
             // AniList allows a set number of requests a minute. Short waits are worth sitting out.
@@ -454,11 +530,29 @@ object AniList {
 }
 
 @Serializable private data class RespDto(val data: DataDto? = null, val errors: List<ErrDto>? = null)
-@Serializable private data class ErrDto(val message: String = "")
+@Serializable private data class ErrDto(val message: String = "", val status: Int? = null)
 @Serializable private data class DataDto(
     @SerialName("Page") val page: PageDto? = null,
     @SerialName("Media") val media: MediaDto? = null,
+    @SerialName("MediaListCollection") val list: ListCollectionDto? = null,
 )
+@Serializable private data class ListCollectionDto(
+    val hasNextChunk: Boolean = false,
+    val user: ListUserDto? = null,
+    val lists: List<ListDto> = emptyList(),
+)
+@Serializable private data class ListUserDto(val name: String = "")
+@Serializable private data class ListDto(val entries: List<ListEntryDto> = emptyList())
+@Serializable private data class ListEntryDto(
+    val mediaId: Int,
+    val status: String? = null,
+    val progress: Int? = null,
+    val repeat: Int? = null,
+    val score: Double? = null,
+    val updatedAt: Long? = null,
+    val media: ListMediaDto? = null,
+)
+@Serializable private data class ListMediaDto(val isAdult: Boolean? = null)
 @Serializable private data class PageDto(val pageInfo: PageInfoDto = PageInfoDto(), val media: List<MediaDto> = emptyList())
 @Serializable private data class PageInfoDto(val hasNextPage: Boolean = false)
 @Serializable private data class TitleDto(val romaji: String? = null, val english: String? = null, val native: String? = null)

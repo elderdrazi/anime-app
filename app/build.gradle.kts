@@ -18,8 +18,8 @@ android {
         applicationId = "com.kumo.anime"
         minSdk = 26
         targetSdk = 35
-        versionCode = 4
-        versionName = "1.3"
+        versionCode = 5
+        versionName = "1.4"
         buildConfigField("boolean", "HAS_FIREBASE", hasFirebase.toString())
     }
 
@@ -68,4 +68,6 @@ dependencies {
     implementation(platform("com.google.firebase:firebase-bom:33.7.0"))
     implementation("com.google.firebase:firebase-auth")
     implementation("com.google.firebase:firebase-firestore")
+
+    testImplementation("junit:junit:4.13.2")
 }

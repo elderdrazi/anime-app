@@ -62,6 +62,7 @@ import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
 import com.kumo.anime.Graph
 import com.kumo.anime.MainActivity
+import com.kumo.anime.data.AniListSync
 import com.kumo.anime.data.Session
 import com.kumo.anime.data.UpdateState
 import com.kumo.anime.data.Updater
@@ -127,6 +128,10 @@ private fun MainScaffold(pending: StateFlow<Intent?>, onHandled: () -> Unit) {
     val update by Updater.state.collectAsStateWithLifecycle()
     val updateReady = update is UpdateState.Available || update is UpdateState.Downloading
     LaunchedEffect(Unit) { Updater.check() }
+    // With AniList connected, pick up anything logged there since the app was last open.
+    val session by social.session.collectAsStateWithLifecycle()
+    val signedInAs = (session as? Session.Ready)?.me?.uid
+    LaunchedEffect(signedInAs) { if (signedInAs != null) AniListSync.syncNow(minGap = 10 * 60 * 1000L) }
     // The version whose banner was closed. It stays closed until the app is next opened.
     var bannerHidden by rememberSaveable { mutableStateOf<String?>(null) }
 

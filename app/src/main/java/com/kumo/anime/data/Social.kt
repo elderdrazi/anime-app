@@ -329,6 +329,7 @@ class Social(private val app: Context) {
         batch: com.google.firebase.firestore.WriteBatch, uid: String, show: Anime, series: Series,
         status: WatchStatus, seen: Map<Int, Int>, updatedAt: Long = now(),
         rating: Int? = entryFor(show, series)?.rating,
+        all: List<Entry> = myEntries.value,
     ) {
         val docs = entryDocs(uid)
         batch.set(
@@ -338,8 +339,53 @@ class Social(private val app: Context) {
                 true, updatedAt, rating, seen.mapKeys { it.key.toString() },
             ),
         )
-        myEntries.value.filter { it.animeId in series.memberIds && it.animeId != show.id }
+        all.filter { it.animeId in series.memberIds && it.animeId != show.id }
             .forEach { batch.delete(docs.document(it.animeId.toString())) }
+    }
+
+    /**
+     * Brings rows from an AniList list into your list, show by show. [changed] are the AniList
+     * entries to act on; [rows] is the whole list, so every season of a show is weighed together.
+     * See [planImport] for the rules. Friends aren't notified: an import isn't something you just watched.
+     */
+    suspend fun importRows(rows: List<ListRow>, changed: Collection<Int>, onProgress: (Int, Int) -> Unit): ImportResult {
+        val uid = myUid ?: throw AccountException("You're not signed in.")
+        // Read from the database rather than the live list: just after launch the live list may not
+        // have arrived yet, and merging into an empty one would overwrite what's saved.
+        val mine = entryDocs(uid).get().await().documents.mapNotNull(::toEntry)
+        val byId = rows.associateBy { it.mediaId }
+        AniList.warm(changed)
+        val shows = AniList.rootsOf(changed).values.distinct()
+        var added = 0
+        var updated = 0
+        var leftOut = 0
+        var batch = db.batch()
+        var waiting = 0
+        shows.forEachIndexed { i, showId ->
+            onProgress(i, shows.size)
+            val series = runCatching { AniList.series(showId) }.getOrNull()
+            val show = AniList.cachedEntry(showId)
+            if (series == null || show == null) {
+                leftOut++
+                return@forEachIndexed
+            }
+            val existing = merge(show, series, mine)
+            val plan = planImport(series, series.parts.mapNotNull { byId[it.id] }, existing)
+            if (plan == null) {
+                if (existing == null) leftOut++
+                return@forEachIndexed
+            }
+            save(batch, uid, show, series, plan.status, plan.seen, plan.updatedAt, plan.rating, mine)
+            if (existing == null) added++ else updated++
+            if (++waiting >= 40) {
+                batch.commit().await()
+                batch = db.batch()
+                waiting = 0
+            }
+        }
+        if (waiting > 0) batch.commit().await()
+        onProgress(shows.size, shows.size)
+        return ImportResult(added, updated, leftOut)
     }
 
     suspend fun setStatus(show: Anime, series: Series, status: WatchStatus?) {

@@ -10,6 +10,7 @@ import android.util.Log
 import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.firestore.FirebaseFirestore
 import com.kumo.anime.BuildConfig
+import com.kumo.anime.data.AniListSync
 import com.kumo.anime.data.Social
 import com.kumo.anime.data.Updater
 import kotlinx.coroutines.CoroutineScope
@@ -22,7 +23,8 @@ import kotlinx.coroutines.tasks.await
 /**
  * The background check: about every 15 minutes while the app is closed it looks for new inbox
  * items and, a few times a day, for a new version, so both can arrive as notifications without a
- * paid push server. (Android decides the exact timing.)
+ * paid push server. About hourly it also syncs a connected AniList list. (Android decides the
+ * exact timing.)
  *
  * It's a plain JobScheduler job on purpose. From Android 15, an app in the background only gets
  * network access while the system is running one of its jobs, so the check has to be started by
@@ -35,6 +37,8 @@ class CheckJob : JobService() {
     override fun onStartJob(params: JobParameters): Boolean {
         running = scope.launch {
             runCatching { checkForUpdate(applicationContext) }
+            // Picks up episodes logged on AniList (by hand or by a tracker add-on) while Kumo is closed.
+            runCatching { AniListSync.syncInBackground(ANILIST_EVERY) }
             val retry = runCatching { checkInbox(applicationContext) }.isFailure
             jobFinished(params, retry)
         }
@@ -54,6 +58,7 @@ class CheckJob : JobService() {
         private const val JOB_ID = 4100
         private const val EVERY = 15L * 60 * 1000
         private const val UPDATE_CHECK_EVERY = 6L * 60 * 60 * 1000
+        private const val ANILIST_EVERY = 60L * 60 * 1000
 
         fun schedule(ctx: Context) {
             val scheduler = ctx.getSystemService(JobScheduler::class.java)

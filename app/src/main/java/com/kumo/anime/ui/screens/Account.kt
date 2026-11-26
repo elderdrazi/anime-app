@@ -49,8 +49,14 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.kumo.anime.BuildConfig
 import com.kumo.anime.Graph
+import androidx.compose.foundation.layout.offset
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.material3.LinearProgressIndicator
+import com.kumo.anime.data.AniListException
+import com.kumo.anime.data.AniListSync
 import com.kumo.anime.data.Entry
 import com.kumo.anime.data.Session
+import com.kumo.anime.data.SyncState
 import com.kumo.anime.data.UpdateState
 import com.kumo.anime.data.Updater
 import com.kumo.anime.ui.ProgressBar
@@ -162,6 +168,8 @@ fun AccountScreen(onOpen: (Int) -> Unit, onOpenUser: (String) -> Unit) {
                 )
             }
 
+            AniListCard(me.uid)
+
             OutlinedButton(
                 onClick = { onOpenUser(me.uid) },
                 shape = RoundedCornerShape(12.dp),
@@ -253,6 +261,159 @@ private fun UpdateCard() {
             if (downloading != null) ProgressBar(downloading.fraction, Modifier.fillMaxWidth())
         }
     }
+}
+
+/**
+ * Connects an AniList account so the list there flows into Kumo, and shows how the last sync went.
+ * Kumo only reads from AniList; it never changes anything there.
+ */
+@Composable
+private fun AniListCard(uid: String) {
+    val linked by AniListSync.link.collectAsStateWithLifecycle()
+    val state by AniListSync.state.collectAsStateWithLifecycle()
+    val link = linked?.takeIf { it.uid == uid }
+    var connecting by remember { mutableStateOf(false) }
+    var confirmDisconnect by remember { mutableStateOf(false) }
+
+    Card {
+        if (link == null) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text("AniList", style = MaterialTheme.typography.titleSmall)
+                    Text(
+                        "Track on AniList too? Connect it to bring your list in and keep it topped up.",
+                        style = MaterialTheme.typography.bodySmall, color = TextDim,
+                    )
+                }
+                Spacer(Modifier.width(12.dp))
+                OutlinedButton(onClick = { connecting = true }, shape = RoundedCornerShape(10.dp)) { Text("Connect") }
+            }
+        } else {
+            val running = state as? SyncState.Running
+            Column {
+                Text("AniList · ${link.name}", style = MaterialTheme.typography.titleSmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Spacer(Modifier.height(2.dp))
+                Text(
+                    syncLine(state, link.syncedAt),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = if (state is SyncState.Failed) MaterialTheme.colorScheme.error else TextDim,
+                )
+                if (running != null) {
+                    Spacer(Modifier.height(10.dp))
+                    if (running.of > 0) {
+                        ProgressBar(running.done / running.of.toFloat(), Modifier.fillMaxWidth())
+                    } else {
+                        LinearProgressIndicator(
+                            Modifier.fillMaxWidth().height(4.dp), color = Accent, trackColor = Hairline,
+                        )
+                    }
+                }
+                Row(Modifier.padding(top = 4.dp).offset(x = (-12).dp)) {
+                    TextButton(onClick = { AniListSync.syncNow() }, enabled = running == null) { Text("Sync now") }
+                    TextButton(onClick = { confirmDisconnect = true }, enabled = running == null) { Text("Disconnect") }
+                }
+            }
+        }
+    }
+
+    if (connecting) AniListDialog { connecting = false }
+    if (confirmDisconnect) {
+        AlertDialog(
+            onDismissRequest = { confirmDisconnect = false },
+            title = { Text("Disconnect AniList?") },
+            text = { Text("Kumo stops checking your AniList list. Everything already brought in stays on your Kumo list.") },
+            confirmButton = {
+                TextButton(onClick = { confirmDisconnect = false; AniListSync.disconnect() }) { Text("Disconnect") }
+            },
+            dismissButton = { TextButton(onClick = { confirmDisconnect = false }) { Text("Cancel") } },
+        )
+    }
+}
+
+private fun syncLine(state: SyncState, syncedAt: Long): String = when (state) {
+    is SyncState.Running ->
+        if (state.of == 0) "Reading your AniList list…" else "Bringing in ${state.done} of ${state.of} shows…"
+    is SyncState.Failed -> state.message
+    is SyncState.Done -> {
+        val r = state.result
+        val did = listOfNotNull(
+            r.added.takeIf { it > 0 }?.let { "added $it ${if (it == 1) "show" else "shows"}" },
+            r.updated.takeIf { it > 0 }?.let { if (r.added > 0) "updated $it" else "updated $it ${if (it == 1) "show" else "shows"}" },
+        ).joinToString(" and ").replaceFirstChar { it.uppercase() }
+        val left = r.leftOut.takeIf { it > 0 }?.let { "$it left out, such as ones you dropped." }
+        if (did.isEmpty() && left == null) "Up to date. Checked just now."
+        else listOfNotNull(did.takeIf { it.isNotEmpty() }?.let { "$it." }, left).joinToString(" ")
+    }
+    SyncState.Idle -> if (syncedAt == 0L) "Not synced yet." else "Synced ${ago(syncedAt)}."
+}
+
+private fun ago(time: Long): String {
+    val minutes = (System.currentTimeMillis() - time) / 60_000
+    return when {
+        minutes < 2 -> "just now"
+        minutes < 60 -> "$minutes minutes ago"
+        minutes < 120 -> "an hour ago"
+        minutes < 48 * 60 -> "${minutes / 60} hours ago"
+        else -> "${minutes / (24 * 60)} days ago"
+    }
+}
+
+/** Asks for an AniList username. The list is checked before the dialog closes, so typos are caught here. */
+@Composable
+private fun AniListDialog(onDismiss: () -> Unit) {
+    var name by rememberSaveable { mutableStateOf("") }
+    var error by remember { mutableStateOf<String?>(null) }
+    var busy by remember { mutableStateOf(false) }
+    val scope = rememberCoroutineScope()
+
+    fun submit() {
+        if (busy) return
+        if (name.isBlank()) {
+            error = "Type your AniList username."
+            return
+        }
+        busy = true
+        error = null
+        scope.launch {
+            try {
+                AniListSync.connect(name)
+                onDismiss()
+            } catch (e: Exception) {
+                error = (e as? AniListException)?.message ?: "Couldn't reach AniList. Check your connection and try again."
+            }
+            busy = false
+        }
+    }
+
+    AlertDialog(
+        onDismissRequest = { if (!busy) onDismiss() },
+        title = { Text("Connect AniList") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Text(
+                    "Kumo reads your public AniList list and adds it to yours here, with each show's seasons joined into one. " +
+                        "It only ever adds: nothing changes on AniList, and nothing here is removed or set back.",
+                    style = MaterialTheme.typography.bodyMedium, color = TextDim,
+                )
+                OutlinedTextField(
+                    value = name,
+                    onValueChange = { name = it.trim(); error = null },
+                    label = { Text("AniList username") },
+                    singleLine = true,
+                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
+                    keyboardActions = KeyboardActions(onDone = { submit() }),
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                error?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error) }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = { submit() }) {
+                if (busy) CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp) else Text("Connect")
+            }
+        },
+        dismissButton = { TextButton(onClick = { if (!busy) onDismiss() }) { Text("Cancel") } },
+    )
 }
 
 @Composable
