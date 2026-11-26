@@ -43,6 +43,10 @@ import androidx.compose.material.icons.outlined.PlayCircle
 import androidx.compose.material.icons.outlined.RadioButtonUnchecked
 import androidx.compose.material.icons.outlined.Recommend
 import androidx.compose.material.icons.outlined.Remove
+import androidx.compose.material.icons.outlined.Star
+import androidx.compose.material.icons.outlined.StarOutline
+import androidx.compose.material3.Slider
+import kotlin.math.roundToInt
 import androidx.compose.ui.graphics.vector.ImageVector
 import com.kumo.anime.data.Series
 import com.kumo.anime.data.buildSeries
@@ -161,6 +165,7 @@ private fun DetailContent(anime: Anime, onOpenUser: (String) -> Unit) {
     // The season whose episode is being typed in, by position among the released ones.
     var settingPart by remember { mutableStateOf<Int?>(null) }
     var expanded by remember { mutableStateOf(false) }
+    var rating by remember { mutableStateOf(false) }
     val progress = entry?.progress ?: 0
     val position = series.locate(progress)
 
@@ -232,6 +237,11 @@ private fun DetailContent(anime: Anime, onOpenUser: (String) -> Unit) {
                         act { s -> social.setStatus(anime, s, if (entry?.status == st) null else st) }
                     }
                 }
+            }
+
+            // You can score a show once you've started it.
+            if (entry != null && entry.status != WatchStatus.PLANNED) {
+                RatingRow(entry.rating) { rating = true }
             }
 
             if (entry?.status == WatchStatus.WATCHING || friendEntries.any { it.entry.status == WatchStatus.WATCHING }) {
@@ -322,6 +332,13 @@ private fun DetailContent(anime: Anime, onOpenUser: (String) -> Unit) {
     }
 
     sheet?.let { kind -> SendSheet(kind, anime, friendEntries, onDismiss = { sheet = null }) }
+    if (rating) {
+        RatingDialog(
+            current = entry?.rating,
+            onDismiss = { rating = false },
+            onSet = { value -> rating = false; act { s -> social.setRating(anime, s, value) } },
+        )
+    }
     settingPart?.let { index ->
         val part = series.watchable.getOrNull(index)
         val length = series.lengthOf(index)
@@ -341,6 +358,67 @@ private fun DetailContent(anime: Anime, onOpenUser: (String) -> Unit) {
             )
         }
     }
+}
+
+@Composable
+private fun RatingRow(rating: Int?, onClick: () -> Unit) {
+    val shape = RoundedCornerShape(12.dp)
+    Row(
+        Modifier.fillMaxWidth().height(46.dp).clip(shape).border(1.dp, Hairline, shape)
+            .clickable(onClick = onClick).padding(horizontal = 14.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Icon(
+            if (rating != null) Icons.Outlined.Star else Icons.Outlined.StarOutline,
+            null,
+            Modifier.size(18.dp),
+            tint = if (rating != null) Accent else TextDim,
+        )
+        Spacer(Modifier.width(10.dp))
+        Text("Your rating", style = MaterialTheme.typography.labelLarge, color = TextBody, modifier = Modifier.weight(1f))
+        if (rating != null) {
+            Text("$rating", style = MaterialTheme.typography.titleMedium, color = Accent)
+            Text(" / 100", style = MaterialTheme.typography.bodySmall, color = TextDim)
+        } else {
+            Text("Rate it", style = MaterialTheme.typography.labelLarge, color = Accent)
+        }
+    }
+}
+
+@Composable
+private fun RatingDialog(current: Int?, onDismiss: () -> Unit, onSet: (Int?) -> Unit) {
+    var value by remember { mutableStateOf((current ?: 75).toFloat()) }
+    val score = value.roundToInt().coerceIn(1, 100)
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Your rating") },
+        text = {
+            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                Row(verticalAlignment = Alignment.Bottom) {
+                    Text("$score", style = MaterialTheme.typography.displaySmall, color = Accent)
+                    Text(" / 100", style = MaterialTheme.typography.bodyMedium, color = TextDim, modifier = Modifier.padding(bottom = 6.dp))
+                }
+                Spacer(Modifier.height(8.dp))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    StepButton(Icons.Outlined.Remove, "One lower") { value = (score - 1).coerceAtLeast(1).toFloat() }
+                    Slider(
+                        value = value,
+                        onValueChange = { value = it },
+                        valueRange = 1f..100f,
+                        modifier = Modifier.weight(1f).padding(horizontal = 10.dp),
+                    )
+                    StepButton(Icons.Outlined.Add, "One higher") { value = (score + 1).coerceAtMost(100).toFloat() }
+                }
+            }
+        },
+        confirmButton = { TextButton(onClick = { onSet(score) }) { Text("Save") } },
+        dismissButton = {
+            Row {
+                if (current != null) TextButton(onClick = { onSet(null) }) { Text("Remove") }
+                TextButton(onClick = onDismiss) { Text("Cancel") }
+            }
+        },
+    )
 }
 
 /** The two things you can send a friend from a show's page. */

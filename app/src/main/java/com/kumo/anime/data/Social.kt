@@ -2,7 +2,14 @@ package com.kumo.anime.data
 
 import android.content.Context
 import android.util.Log
+import com.google.firebase.FirebaseNetworkException
+import com.google.firebase.auth.EmailAuthProvider
 import com.google.firebase.auth.FirebaseAuth
+import com.google.firebase.auth.FirebaseAuthException
+import com.google.firebase.auth.FirebaseAuthInvalidCredentialsException
+import com.google.firebase.auth.FirebaseAuthInvalidUserException
+import com.google.firebase.auth.FirebaseAuthUserCollisionException
+import com.google.firebase.auth.FirebaseAuthWeakPasswordException
 import com.google.firebase.firestore.DocumentSnapshot
 import com.google.firebase.firestore.FieldPath
 import com.google.firebase.firestore.FirebaseFirestore
@@ -39,7 +46,7 @@ enum class WatchStatus(val key: String, val label: String) {
     }
 }
 
-data class Profile(val uid: String, val username: String)
+data class Profile(val uid: String, val username: String, val createdAt: Long = 0)
 
 data class Entry(
     val animeId: Int,
@@ -53,7 +60,15 @@ data class Entry(
     val label: String? = null,
     /** True once the entry covers a whole show. Older versions saved one entry per season. */
     val whole: Boolean = false,
+    /** Your own score for the show, 1 to 100. */
+    val rating: Int? = null,
 )
+
+/** A person's best-rated shows, highest first. */
+fun topRated(entries: List<Entry>, count: Int = 10): List<Entry> =
+    entries.filter { it.rating != null }
+        .sortedWith(compareByDescending<Entry> { it.rating }.thenByDescending { it.updatedAt })
+        .take(count)
 
 data class Friend(val uid: String, val username: String)
 
@@ -111,6 +126,9 @@ sealed interface Session {
 
 class UsernameTakenException : Exception("That username's taken. Try another.")
 
+/** A sign-in or email problem, with a message fit to show as is. */
+class AccountException(message: String) : Exception(message)
+
 /**
  * Everything social: account, lists, friends, suggestions and the inbox, all on Firestore.
  * Free-tier friendly: no Cloud Functions, and every query is single-field so no indexes are needed.
@@ -165,13 +183,70 @@ class Social(private val app: Context) {
             _session.value = try {
                 val user = auth.currentUser ?: auth.signInAnonymously().await().user
                     ?: error("Sign-in failed")
-                val name = db.collection("users").document(user.uid).get().await().getString("username")
-                if (name == null) Session.NeedsUsername else Session.Ready(Profile(user.uid, name))
+                // Guest accounts report an empty email rather than none.
+                _email.value = user.email?.takeIf { it.isNotBlank() }
+                val doc = db.collection("users").document(user.uid).get().await()
+                val name = doc.getString("username")
+                if (name == null) Session.NeedsUsername else Session.Ready(Profile(user.uid, name, doc.getLong("createdAt") ?: 0))
             } catch (e: Exception) {
                 Log.w(TAG, "start failed", e)
                 Session.Failed("Couldn't connect. Check your connection and try again.")
             }
         }
+    }
+
+    // ---- email ----
+    // Accounts start out tied to the phone. Adding an email and password lets the same account be
+    // opened on another phone or after a reinstall. The email stays in Firebase sign-in; it is never
+    // written to the database, so friends can't see it.
+
+    private val _email = MutableStateFlow<String?>(null)
+    val email: StateFlow<String?> = _email.asStateFlow()
+
+    /** Attaches an email and password to the current account, keeping its list and friends. */
+    suspend fun addEmail(email: String, password: String) {
+        val user = auth.currentUser ?: throw AccountException("You're not signed in.")
+        try {
+            user.linkWithCredential(EmailAuthProvider.getCredential(email.trim(), password)).await()
+        } catch (e: Exception) {
+            throw AccountException(accountMessage(e))
+        }
+        _email.value = auth.currentUser?.email?.takeIf { it.isNotBlank() }
+    }
+
+    /** Opens an existing account on this phone. The fresh guest account it replaces is left empty. */
+    suspend fun signIn(email: String, password: String) {
+        try {
+            auth.signInWithEmailAndPassword(email.trim(), password).await()
+        } catch (e: Exception) {
+            throw AccountException(accountMessage(e))
+        }
+        start()
+    }
+
+    suspend fun sendPasswordReset(email: String) {
+        try {
+            auth.sendPasswordResetEmail(email.trim()).await()
+        } catch (e: Exception) {
+            throw AccountException(accountMessage(e))
+        }
+    }
+
+    /** Only offered once an email is attached, since a guest account can't be signed back into. */
+    fun signOut() {
+        auth.signOut()
+        _email.value = null
+        start()
+    }
+
+    private fun accountMessage(e: Exception): String = when {
+        e is FirebaseAuthUserCollisionException -> "That email already has an account. Sign in with it instead."
+        e is FirebaseAuthWeakPasswordException -> "Use a password of at least 6 characters."
+        e is FirebaseAuthInvalidUserException -> "No account uses that email."
+        e is FirebaseAuthInvalidCredentialsException -> "That email or password isn't right."
+        (e as? FirebaseAuthException)?.errorCode == "ERROR_OPERATION_NOT_ALLOWED" -> "Email sign-in isn't switched on for this app yet."
+        e is FirebaseNetworkException -> "Couldn't connect. Check your connection and try again."
+        else -> "That didn't work. Try again."
     }
 
     suspend fun claimUsername(raw: String) {
@@ -192,7 +267,7 @@ class Social(private val app: Context) {
             if (e is UsernameTakenException || e.cause is UsernameTakenException) throw UsernameTakenException()
             throw e
         }
-        _session.value = Session.Ready(Profile(uid, name))
+        _session.value = Session.Ready(Profile(uid, name, now()))
     }
 
     // ---- lists and episode tracking ----
@@ -240,6 +315,7 @@ class Social(private val app: Context) {
         return Entry(
             show.id, show.title, show.cover, status, progress, total,
             found.maxOf { it.updatedAt }, series.label(progress), whole = false,
+            rating = own?.rating ?: found.mapNotNull { it.rating }.maxOrNull(),
         )
     }
 
@@ -247,11 +323,12 @@ class Social(private val app: Context) {
     private fun save(
         batch: com.google.firebase.firestore.WriteBatch, uid: String, show: Anime, series: Series,
         status: WatchStatus, progress: Int, updatedAt: Long = now(),
+        rating: Int? = entryFor(show, series)?.rating,
     ) {
         val docs = entryDocs(uid)
         batch.set(
             docs.document(show.id.toString()),
-            entryMap(show.id, show.title, show.cover, status, progress, series.total, series.label(progress), true, updatedAt),
+            entryMap(show.id, show.title, show.cover, status, progress, series.total, series.label(progress), true, updatedAt, rating),
         )
         myEntries.value.filter { it.animeId in series.memberIds && it.animeId != show.id }
             .forEach { batch.delete(docs.document(it.animeId.toString())) }
@@ -277,6 +354,15 @@ class Social(private val app: Context) {
             } ?: 0
         }
         save(batch, uid, show, series, status, progress)
+        batch.commit().await()
+    }
+
+    /** Your own score for a show on your list, 1 to 100, or null to clear it. Doesn't count as activity. */
+    suspend fun setRating(show: Anime, series: Series, rating: Int?) {
+        val uid = myUid ?: return
+        val e = entryFor(show, series) ?: return
+        val batch = db.batch()
+        save(batch, uid, show, series, e.status, e.progress, e.updatedAt, rating?.coerceIn(1, 100))
         batch.commit().await()
     }
 
@@ -473,10 +559,10 @@ class Social(private val app: Context) {
 
     private fun entryMap(
         id: Int, title: String, cover: String?, status: WatchStatus, progress: Int, total: Int?,
-        label: String?, whole: Boolean, updatedAt: Long,
+        label: String?, whole: Boolean, updatedAt: Long, rating: Int? = null,
     ) = mapOf(
         "animeId" to id, "title" to title, "cover" to cover, "status" to status.key,
-        "progress" to progress, "total" to total, "label" to label,
+        "progress" to progress, "total" to total, "label" to label, "rating" to rating,
         "v" to if (whole) 2 else 1, "updatedAt" to updatedAt,
     )
 
@@ -504,6 +590,7 @@ class Social(private val app: Context) {
                 updatedAt = d.getLong("updatedAt") ?: 0,
                 label = d.getString("label"),
                 whole = (d.getLong("v") ?: 1) >= 2,
+                rating = d.getLong("rating")?.toInt(),
             )
         }
 

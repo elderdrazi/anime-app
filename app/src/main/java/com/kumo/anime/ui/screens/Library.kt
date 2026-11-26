@@ -90,6 +90,13 @@ fun LibraryScreen(onOpen: (Int) -> Unit) {
     }
 }
 
+/** Under a list card: where you are in a show you're watching, plus your rating if you gave one. */
+fun entryCaption(e: Entry): String? {
+    val where = if (e.status == WatchStatus.WATCHING) e.label ?: progressLabel(e.progress, e.total) else null
+    val rated = e.rating?.let { "★ $it" }
+    return listOfNotNull(rated, where).joinToString(" · ").ifEmpty { null }
+}
+
 /** Shared by My list and profiles: status pills plus the matching grid. */
 fun LazyGridScope.entryTabs(
     entries: List<Entry>,
@@ -117,7 +124,7 @@ fun LazyGridScope.entryTabs(
             title = e.title,
             cover = e.cover,
             onClick = { onOpen(e.animeId) },
-            caption = if (e.status == WatchStatus.WATCHING) e.label ?: progressLabel(e.progress, e.total) else null,
+            caption = entryCaption(e),
             progress = if (e.status == WatchStatus.WATCHING && e.total != null && e.total > 0) e.progress / e.total.toFloat() else null,
         )
     }

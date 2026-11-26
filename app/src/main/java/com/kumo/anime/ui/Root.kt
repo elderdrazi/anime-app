@@ -63,6 +63,9 @@ import androidx.navigation.navArgument
 import com.kumo.anime.Graph
 import com.kumo.anime.MainActivity
 import com.kumo.anime.data.Session
+import androidx.compose.material.icons.outlined.Person
+import com.kumo.anime.ui.screens.AccountScreen
+import com.kumo.anime.ui.screens.CredentialsDialog
 import com.kumo.anime.ui.screens.AnimeDetailScreen
 import com.kumo.anime.ui.screens.DiscoverScreen
 import com.kumo.anime.ui.screens.FriendsScreen
@@ -100,6 +103,7 @@ private val tabs = listOf(
     Tab("library", "My list", Icons.Outlined.Bookmarks),
     Tab("friends", "Friends", Icons.Outlined.People),
     Tab("inbox", "Inbox", Icons.Outlined.Notifications),
+    Tab("me", "Profile", Icons.Outlined.Person),
 )
 
 @Composable
@@ -179,6 +183,7 @@ private fun MainScaffold(pending: StateFlow<Intent?>, onHandled: () -> Unit) {
                 composable("library") { LibraryScreen(onOpen = openAnime) }
                 composable("friends") { FriendsScreen(onOpenUser = openUser) }
                 composable("inbox") { InboxScreen(onOpen = openAnime, onOpenUser = openUser) }
+                composable("me") { AccountScreen(onOpen = openAnime, onOpenUser = openUser) }
                 composable("anime/{id}", listOf(navArgument("id") { type = NavType.IntType })) {
                     AnimeDetailScreen(
                         id = it.arguments!!.getInt("id"),
@@ -209,6 +214,7 @@ private fun UsernameScreen() {
     var name by rememberSaveable { mutableStateOf("") }
     var error by remember { mutableStateOf<String?>(null) }
     var busy by remember { mutableStateOf(false) }
+    var signingIn by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
     Column(
         Modifier.fillMaxSize().padding(horizontal = 28.dp),
@@ -254,5 +260,19 @@ private fun UsernameScreen() {
             if (busy) CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp, color = MaterialTheme.colorScheme.onPrimary)
             else Text("Continue")
         }
+        Spacer(Modifier.height(8.dp))
+        TextButton(onClick = { signingIn = true }, modifier = Modifier.align(Alignment.CenterHorizontally)) {
+            Text("I already have an account")
+        }
+    }
+    if (signingIn) {
+        CredentialsDialog(
+            title = "Sign in",
+            blurb = "Use the email and password you added to your Kumo account.",
+            confirm = "Sign in",
+            onDismiss = { signingIn = false },
+            onForgot = { Graph.social.sendPasswordReset(it) },
+            onSubmit = { e, p -> Graph.social.signIn(e, p) },
+        )
     }
 }

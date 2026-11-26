@@ -39,8 +39,11 @@ import com.kumo.anime.Graph
 import com.kumo.anime.data.AniList
 import com.kumo.anime.data.FILTERS
 import com.kumo.anime.data.Filter
+import com.kumo.anime.data.Session
 import com.kumo.anime.data.Show
 import com.kumo.anime.data.Sort
+import com.kumo.anime.data.WatchStatus
+import androidx.compose.foundation.lazy.grid.items
 import com.kumo.anime.data.partLabel
 import com.kumo.anime.ui.AnimeCard
 import com.kumo.anime.ui.Pill
@@ -59,6 +62,8 @@ data class DiscoverState(
     val query: String = "",
     val sort: Sort = Sort.POPULAR,
     val filter: Filter? = null,
+    /** When set, the grid shows your own list for that status instead of AniList's catalogue. */
+    val mine: WatchStatus? = null,
     val items: List<Show> = emptyList(),
     val loading: Boolean = false,
     val endReached: Boolean = false,
@@ -90,10 +95,13 @@ class DiscoverViewModel : ViewModel() {
     }
 
     fun setFilter(f: Filter?) {
-        if (f == _state.value.filter) return
-        _state.update { it.copy(filter = f) }
-        reload()
+        val old = _state.value
+        _state.update { it.copy(filter = f, mine = null) }
+        if (f != old.filter) reload()
     }
+
+    /** Your own list needs no loading; it's already on the phone. */
+    fun setMine(status: WatchStatus?) = _state.update { it.copy(mine = status) }
 
     fun reload() {
         loadJob?.cancel()
@@ -147,6 +155,8 @@ fun DiscoverScreen(onOpen: (Int) -> Unit, vm: DiscoverViewModel = viewModel()) {
     val s by vm.state.collectAsStateWithLifecycle()
     val mine by Graph.social.myEntries.collectAsStateWithLifecycle()
     val statusById = remember(mine) { mine.associate { it.animeId to it.status } }
+    val session by Graph.social.session.collectAsStateWithLifecycle()
+    val signedIn = session is Session.Ready
     val grid = rememberLazyGridState()
     val scope = rememberCoroutineScope()
     val toTop: () -> Unit = { scope.launch { grid.scrollToItem(0) } }
@@ -169,7 +179,7 @@ fun DiscoverScreen(onOpen: (Int) -> Unit, vm: DiscoverViewModel = viewModel()) {
         ) {
             item(span = { GridItemSpan(maxLineSpan) }) {
                 Column(Modifier.padding(top = 12.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                    if (s.query.isBlank()) {
+                    if (s.query.isBlank() && s.mine == null) {
                         LazyRow(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                             items(Sort.entries) { sort ->
                                 Pill(sort.label, s.sort == sort, { vm.setSort(sort); toTop() }, outlined = false)
@@ -177,10 +187,41 @@ fun DiscoverScreen(onOpen: (Int) -> Unit, vm: DiscoverViewModel = viewModel()) {
                         }
                     }
                     LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                        item { Pill("All", s.filter == null, { vm.setFilter(null); toTop() }) }
-                        items(FILTERS) { f -> Pill(f.label, s.filter == f, { vm.setFilter(f); toTop() }) }
+                        item { Pill("All", s.filter == null && s.mine == null, { vm.setFilter(null); toTop() }) }
+                        // Your own lists come first, then AniList's genres and themes.
+                        if (signedIn) {
+                            items(ListTabs) { st ->
+                                Pill(st.label, s.mine == st, { vm.setMine(if (s.mine == st) null else st); toTop() })
+                            }
+                        }
+                        items(FILTERS) { f -> Pill(f.label, s.mine == null && s.filter == f, { vm.setFilter(f); toTop() }) }
                     }
                 }
+            }
+            if (s.mine != null) {
+                // Most recently touched first: starting a show or logging an episode moves it to the top.
+                val list = mine.filter { it.status == s.mine && it.title.contains(s.query.trim(), ignoreCase = true) }
+                    .sortedByDescending { it.updatedAt }
+                items(list, key = { it.animeId }) { e ->
+                    AnimeCard(
+                        title = e.title,
+                        cover = e.cover,
+                        caption = entryCaption(e),
+                        progress = if (e.status == WatchStatus.WATCHING && e.total != null && e.total > 0) e.progress / e.total.toFloat() else null,
+                        onClick = { onOpen(e.animeId) },
+                    )
+                }
+                if (list.isEmpty()) {
+                    item(span = { GridItemSpan(maxLineSpan) }) {
+                        Box(Modifier.fillMaxWidth().padding(vertical = 32.dp), contentAlignment = Alignment.Center) {
+                            Text(
+                                if (s.query.isBlank()) "Nothing on this list yet" else "Nothing on this list matches that",
+                                color = TextDim, style = MaterialTheme.typography.bodyMedium,
+                            )
+                        }
+                    }
+                }
+                return@LazyVerticalGrid
             }
             // In search and in the Airing and Upcoming lists, say which season put the show there.
             val nameSeason = s.query.isNotBlank() || s.sort == Sort.AIRING || s.sort == Sort.UPCOMING

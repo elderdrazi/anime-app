@@ -42,6 +42,7 @@ import com.kumo.anime.Graph
 import com.kumo.anime.data.Entry
 import com.kumo.anime.data.Profile
 import com.kumo.anime.data.WatchStatus
+import com.kumo.anime.data.topRated
 import com.kumo.anime.ui.AnimeCard
 import com.kumo.anime.ui.Avatar
 import com.kumo.anime.ui.LocalSnackbar
@@ -107,6 +108,12 @@ fun ProfileScreen(uid: String, onBack: () -> Unit, onOpen: (Int) -> Unit) {
                             ) { Text("Add friend") }
                         }
                     }
+                }
+            }
+            val top = topRated(entries)
+            if (top.isNotEmpty()) {
+                item(span = { GridItemSpan(maxLineSpan) }) {
+                    TopTen(top, onOpen, if (top.size == 10) "Top ten" else "Top ${top.size}")
                 }
             }
             if (!isMe && bothWatching.isNotEmpty()) {
