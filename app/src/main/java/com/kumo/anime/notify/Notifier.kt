@@ -53,6 +53,7 @@ object Notifier {
             NoticeType.SUGGESTION_REPLY ->
                 who to if (n.accepted == true) "is in for $title" else "passed on $title for now"
             NoticeType.CAUGHT_UP -> who to "caught up to you on $title" + (n.message?.let { " ($it)" } ?: "")
+            NoticeType.RECOMMENDATION -> who to "recommends $title" + (n.message?.let { " · \"$it\"" } ?: "")
             else -> who to "sent you something"
         }
     }

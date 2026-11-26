@@ -2,8 +2,10 @@
 
 An Android app for sharing what anime you've watched, what you want to watch, and how far along you are, then picking shows to watch with friends.
 
-- **Discover:** every anime on AniList, sorted by popularity, trending or rating, filtered by genre, with search. Each anime has its cover art, banner and full synopsis.
-- **My list:** Want to watch, Watching (with an episode tracker) and Watched. Reaching the last episode marks a show watched.
+- **Discover:** every anime on AniList, one card per show. Sort by Popular, Trending, Top rated, Airing or Upcoming, filter by genre or theme (Isekai, Shounen, School and so on), or search. Each show has its cover art, banner and full synopsis.
+- **Seasons in one place:** AniList lists every season, film and special separately. Kumo follows their prequel/sequel links and folds them into one show, listed in release order on the show's page.
+- **My list:** Want to watch, Watching and Watched. The episode tracker runs across the whole show ("Season 2 · Episode 5"), and tapping a season jumps to it. Reaching the last released episode marks a show watched.
+- **Recommend:** send a show to a friend with a note; they can add it to their list from the inbox.
 - **Friends:** add people by username, or share a `kumo://u/<you>` link. Their lists, progress and the shows you both want to watch appear on their profile.
 - **Watch together:** suggest an anime to a friend; when they say "I'm in" it lands on both of your Watching together rows.
 - **Inbox and notifications:** friend requests, suggestions, replies, and "@friend caught up to you on X".
@@ -35,4 +37,6 @@ The APK lands in `app/build/outputs/apk/release/app-release.apk`. Friends can in
 
 - **Accounts are anonymous, tied to the install.** Uninstalling or clearing app data loses the account. Adding Google sign-in is the fix.
 - **Background notifications arrive within about 15 minutes**, because Android batches background checks. Instant push needs Firebase Cloud Functions, which requires the paid Blaze plan.
+- **Version 1.0 saved one list entry per season.** 1.1 converts your own entries the first time it opens; a friend's list lines up with yours once they update too.
+- **AniList allows 30 requests a minute.** Fast browsing can pause for a few seconds while the app waits its turn.
 - The share link uses a `kumo://` address, which some chat apps don't make tappable. The username in the message always works.

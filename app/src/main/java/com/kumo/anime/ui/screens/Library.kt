@@ -117,7 +117,7 @@ fun LazyGridScope.entryTabs(
             title = e.title,
             cover = e.cover,
             onClick = { onOpen(e.animeId) },
-            caption = if (e.status == WatchStatus.WATCHING) progressLabel(e.progress, e.total) else null,
+            caption = if (e.status == WatchStatus.WATCHING) e.label ?: progressLabel(e.progress, e.total) else null,
             progress = if (e.status == WatchStatus.WATCHING && e.total != null && e.total > 0) e.progress / e.total.toFloat() else null,
         )
     }

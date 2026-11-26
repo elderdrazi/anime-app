@@ -4,7 +4,7 @@ import android.content.Context
 import android.util.Log
 import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.firestore.DocumentSnapshot
-import com.google.firebase.firestore.FieldValue
+import com.google.firebase.firestore.FieldPath
 import com.google.firebase.firestore.FirebaseFirestore
 import com.google.firebase.firestore.Query
 import com.google.firebase.firestore.SetOptions
@@ -49,6 +49,10 @@ data class Entry(
     val progress: Int,
     val total: Int?,
     val updatedAt: Long,
+    /** Where in the show this is, like "Season 2 · Ep 5". Null for single-season shows. */
+    val label: String? = null,
+    /** True once the entry covers a whole show. Older versions saved one entry per season. */
+    val whole: Boolean = false,
 )
 
 data class Friend(val uid: String, val username: String)
@@ -62,6 +66,7 @@ object NoticeType {
     const val SUGGESTION = "suggestion"
     const val SUGGESTION_REPLY = "suggestion_reply"
     const val CAUGHT_UP = "caught_up"
+    const val RECOMMENDATION = "recommendation"
 }
 
 data class Notice(
@@ -142,8 +147,19 @@ class Social(private val app: Context) {
         db.collection("suggestions").whereArrayContains("participants", me.uid).listen(::toSuggestion)
     }
 
+    private var upgrading = false
+
     fun start() {
         if (!enabled) return
+        if (!upgrading) {
+            upgrading = true
+            // Entries saved per season by version 1.0 are folded into whole-show entries.
+            scope.launch {
+                myEntries.collect { list ->
+                    if (list.any { !it.whole }) runCatching { upgradeEntries(list) }.onFailure { Log.w(TAG, "upgrade failed", it) }
+                }
+            }
+        }
         scope.launch {
             _session.value = Session.Loading
             _session.value = try {
@@ -184,59 +200,151 @@ class Social(private val app: Context) {
     fun entriesOf(uid: String): Flow<List<Entry>> =
         db.collection("users").document(uid).collection("entries").listen(::toEntry)
 
-    fun entryOf(animeId: Int): Entry? = myEntries.value.firstOrNull { it.animeId == animeId }
+    private fun entryDocs(uid: String) = db.collection("users").document(uid).collection("entries")
 
-    suspend fun setStatus(anime: Anime, status: WatchStatus?) {
+    /** Your entry for a show. [series] may be null while its seasons are still loading. */
+    fun entryFor(show: Anime, series: Series?): Entry? = merge(show, series, myEntries.value)
+
+    /**
+     * One entry for a whole show out of whatever is saved for it. Version 1.0 saved an entry per
+     * season, so those are converted into a single running episode count across the show.
+     */
+    fun merge(show: Anime, series: Series?, all: List<Entry>): Entry? {
+        val ids = series?.memberIds ?: setOf(show.id)
+        val found = all.filter { it.animeId in ids }
+        if (found.isEmpty()) return null
+        val own = found.firstOrNull { it.animeId == show.id }
+        if (series == null || (found.size == 1 && own?.whole == true)) return own
+        var progress = 0
+        for (e in found) {
+            val reached = if (e.whole && e.animeId == show.id) {
+                e.progress
+            } else {
+                val i = series.watchable.indexOfFirst { it.id == e.animeId }
+                when {
+                    i < 0 || e.status == WatchStatus.PLANNED -> 0
+                    e.status == WatchStatus.WATCHED -> series.offsetOf(i) + (series.lengthOf(i) ?: e.progress)
+                    e.progress > 0 -> series.offsetOf(i) + e.progress
+                    else -> 0
+                }
+            }
+            progress = maxOf(progress, reached)
+        }
+        progress = series.clamp(progress)
+        val total = series.total
+        val status = when {
+            found.all { it.status == WatchStatus.PLANNED } -> WatchStatus.PLANNED
+            total != null && total > 0 && progress >= total -> WatchStatus.WATCHED
+            else -> WatchStatus.WATCHING
+        }
+        return Entry(
+            show.id, show.title, show.cover, status, progress, total,
+            found.maxOf { it.updatedAt }, series.label(progress), whole = false,
+        )
+    }
+
+    /** Writes the single entry for a show and clears any per-season ones it replaces. */
+    private fun save(
+        batch: com.google.firebase.firestore.WriteBatch, uid: String, show: Anime, series: Series,
+        status: WatchStatus, progress: Int, updatedAt: Long = now(),
+    ) {
+        val docs = entryDocs(uid)
+        batch.set(
+            docs.document(show.id.toString()),
+            entryMap(show.id, show.title, show.cover, status, progress, series.total, series.label(progress), true, updatedAt),
+        )
+        myEntries.value.filter { it.animeId in series.memberIds && it.animeId != show.id }
+            .forEach { batch.delete(docs.document(it.animeId.toString())) }
+    }
+
+    suspend fun setStatus(show: Anime, series: Series, status: WatchStatus?) {
         val uid = myUid ?: return
-        val ref = db.collection("users").document(uid).collection("entries").document(anime.id.toString())
+        val batch = db.batch()
         if (status == null) {
-            ref.delete().await()
+            myEntries.value.filter { it.animeId in series.memberIds }
+                .forEach { batch.delete(entryDocs(uid).document(it.animeId.toString())) }
+            batch.commit().await()
             return
         }
-        val old = entryOf(anime.id)
+        val old = entryFor(show, series)
+        val total = series.total
         val progress = when (status) {
-            WatchStatus.WATCHED -> anime.episodes ?: old?.progress ?: 0
+            WatchStatus.WATCHED -> total ?: old?.progress ?: 0
             WatchStatus.PLANNED -> 0
-            WatchStatus.WATCHING -> old?.progress?.takeIf { old.status == WatchStatus.WATCHING } ?: 0
+            // Picking a finished show back up (a new season came out) carries on from where you were.
+            WatchStatus.WATCHING -> old?.progress?.takeIf {
+                old.status == WatchStatus.WATCHING || (old.status == WatchStatus.WATCHED && total != null && it < total)
+            } ?: 0
         }
-        ref.set(entryMap(anime.id, anime.title, anime.cover, status, progress, anime.episodes)).await()
+        save(batch, uid, show, series, status, progress)
+        batch.commit().await()
     }
 
     /**
-     * Sets the episode count. Reaching the final episode marks the show watched.
-     * Returns friends this update caught up to, so they can be told.
+     * Sets how many episodes of the show you've seen, counted across all its seasons.
+     * Reaching the last released episode marks it watched, and friends you pass are told.
      */
-    suspend fun setProgress(anime: Anime, episode: Int, friendEntries: List<FriendEntry>) {
+    suspend fun setProgress(show: Anime, series: Series, episode: Int, friendEntries: List<FriendEntry>) {
         val uid = myUid ?: return
         val me = me ?: return
-        val total = anime.episodes
-        val ep = episode.coerceAtLeast(0).let { if (total != null) it.coerceAtMost(total) else it }
-        val oldEp = entryOf(anime.id)?.progress ?: 0
-        val status = if (total != null && ep >= total) WatchStatus.WATCHED else WatchStatus.WATCHING
+        val total = series.total
+        val ep = series.clamp(episode)
+        val oldEp = entryFor(show, series)?.progress ?: 0
+        val status = if (total != null && total > 0 && ep >= total) WatchStatus.WATCHED else WatchStatus.WATCHING
         val batch = db.batch()
-        batch.set(
-            db.collection("users").document(uid).collection("entries").document(anime.id.toString()),
-            entryMap(anime.id, anime.title, anime.cover, status, ep, total),
-        )
-        // Tell friends who are watching the same show when you pass their episode.
+        save(batch, uid, show, series, status, ep)
         friendEntries.filter { it.entry.status == WatchStatus.WATCHING && oldEp < it.entry.progress && ep >= it.entry.progress && it.entry.progress > 0 }
             .forEach { fe ->
                 batch.set(
                     noticeRef(fe.friend.uid),
-                    noticeMap(NoticeType.CAUGHT_UP, me, anime.id, anime.title, anime.cover, "Episode $ep"),
+                    noticeMap(NoticeType.CAUGHT_UP, me, show.id, show.title, show.cover, series.describe(ep)),
                 )
             }
         batch.commit().await()
     }
 
-    suspend fun friendEntries(animeId: Int): List<FriendEntry> = coroutineScope {
+    /** Each friend's entry for a show, including ones still saved per season. */
+    suspend fun friendEntries(show: Anime, series: Series?): List<FriendEntry> = coroutineScope {
+        val ids = (series?.memberIds ?: setOf(show.id)).map { it.toString() }.take(30)
         friends.value.map { f ->
             async {
                 runCatching {
-                    db.collection("users").document(f.uid).collection("entries").document(animeId.toString()).get().await()
-                }.getOrNull()?.let(::toEntry)?.let { FriendEntry(f, it) }
+                    entryDocs(f.uid).whereIn(FieldPath.documentId(), ids).get().await()
+                }.getOrNull()?.documents?.mapNotNull(::toEntry)
+                    ?.let { merge(show, series, it) }
+                    ?.let { FriendEntry(f, it) }
             }
         }.awaitAll().filterNotNull()
+    }
+
+    private suspend fun upgradeEntries(entries: List<Entry>) {
+        val uid = myUid ?: return
+        val old = entries.filter { !it.whole }
+        val rootOf = AniList.rootsOf(old.map { it.animeId })
+        for (showId in rootOf.values.distinct()) {
+            runCatching {
+                val show = AniList.show(showId)
+                val series = AniList.series(showId)
+                val merged = merge(show, series, myEntries.value) ?: return@runCatching
+                val batch = db.batch()
+                save(batch, uid, show, series, merged.status, merged.progress, merged.updatedAt)
+                batch.commit().await()
+            }.onFailure { Log.w(TAG, "couldn't upgrade $showId", it) }
+        }
+    }
+
+    /** Puts a show from a suggestion or recommendation on "Want to watch", unless it's already tracked. */
+    private suspend fun addPlanned(batch: com.google.firebase.firestore.WriteBatch, uid: String, n: Notice) {
+        val id = n.animeId ?: return
+        // Older versions send a season's id; file it under its show when that can be looked up.
+        val showId = runCatching { AniList.rootsOf(listOf(id))[id] }.getOrNull()
+        val key = showId ?: id
+        if (myEntries.value.any { it.animeId == key }) return
+        val show = showId?.let { AniList.cachedEntry(it) }
+        batch.set(
+            entryDocs(uid).document(key.toString()),
+            entryMap(key, show?.title ?: n.title ?: "", show?.cover ?: n.cover, WatchStatus.PLANNED, 0, null, null, showId != null, now()),
+        )
     }
 
     // ---- people ----
@@ -316,13 +424,26 @@ class Social(private val app: Context) {
             noticeMap(NoticeType.SUGGESTION_REPLY, me, n.animeId, n.title, n.cover) + ("accepted" to accept),
         )
         batch.update(noticeDoc(n.id), mapOf("handled" to true, "read" to true))
-        // Saying yes puts it on your "Want to watch" list unless you already track it.
-        if (accept && n.animeId != null && entryOf(n.animeId) == null) {
-            batch.set(
-                db.collection("users").document(me.uid).collection("entries").document(n.animeId.toString()),
-                entryMap(n.animeId, n.title ?: "", n.cover, WatchStatus.PLANNED, 0, null),
-            )
-        }
+        if (accept) addPlanned(batch, me.uid, n)
+        batch.commit().await()
+    }
+
+    // ---- recommendations ----
+
+    /** A one-way "you should watch this". It lands in the friend's inbox; nothing is tracked afterwards. */
+    suspend fun recommend(friend: Friend, show: Anime, message: String?) {
+        val me = me ?: return
+        noticeRef(friend.uid)
+            .set(noticeMap(NoticeType.RECOMMENDATION, me, show.id, show.title, show.cover, message?.takeIf { it.isNotBlank() }))
+            .await()
+    }
+
+    /** Answers a recommendation: add it to "Want to watch", or just clear it. */
+    suspend fun answerRecommendation(n: Notice, add: Boolean) {
+        val me = me ?: return
+        val batch = db.batch()
+        if (add) addPlanned(batch, me.uid, n)
+        batch.update(noticeDoc(n.id), mapOf("handled" to true, "read" to true, "accepted" to add))
         batch.commit().await()
     }
 
@@ -350,9 +471,13 @@ class Social(private val app: Context) {
         "createdAt" to now(), "read" to false, "handled" to false,
     )
 
-    private fun entryMap(id: Int, title: String, cover: String?, status: WatchStatus, progress: Int, total: Int?) = mapOf(
+    private fun entryMap(
+        id: Int, title: String, cover: String?, status: WatchStatus, progress: Int, total: Int?,
+        label: String?, whole: Boolean, updatedAt: Long,
+    ) = mapOf(
         "animeId" to id, "title" to title, "cover" to cover, "status" to status.key,
-        "progress" to progress, "total" to total, "updatedAt" to now(),
+        "progress" to progress, "total" to total, "label" to label,
+        "v" to if (whole) 2 else 1, "updatedAt" to updatedAt,
     )
 
     private fun <T> Query.listen(map: (DocumentSnapshot) -> T?): Flow<List<T>> = callbackFlow {
@@ -377,6 +502,8 @@ class Social(private val app: Context) {
                 progress = d.getLong("progress")?.toInt() ?: 0,
                 total = d.getLong("total")?.toInt(),
                 updatedAt = d.getLong("updatedAt") ?: 0,
+                label = d.getString("label"),
+                whole = (d.getLong("v") ?: 1) >= 2,
             )
         }
 

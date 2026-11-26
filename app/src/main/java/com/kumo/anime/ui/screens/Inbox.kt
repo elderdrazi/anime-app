@@ -98,7 +98,8 @@ private fun NoticeRow(n: Notice, onOpen: (Int) -> Unit, onOpenUser: (String) -> 
     val scope = rememberCoroutineScope()
     val snackbar = LocalSnackbar.current
     val (who, rest) = Notifier.text(n)
-    val body = if (n.type == NoticeType.SUGGESTION) rest.substringBefore(" · \"") else rest
+    val hasNote = n.type == NoticeType.SUGGESTION || n.type == NoticeType.RECOMMENDATION
+    val body = if (hasNote) rest.substringBefore(" · \"") else rest
 
     fun run(block: suspend () -> Unit) = scope.launch {
         runCatching { block() }.onFailure { snackbar.showSnackbar("Couldn't do that. Check your connection.") }
@@ -125,7 +126,7 @@ private fun NoticeRow(n: Notice, onOpen: (Int) -> Unit, onOpenUser: (String) -> 
                 style = MaterialTheme.typography.bodyMedium,
                 color = TextHi,
             )
-            if (n.type == NoticeType.SUGGESTION && n.message != null) {
+            if (hasNote && n.message != null) {
                 Text("“${n.message}”", style = MaterialTheme.typography.bodyMedium, color = TextDim, fontStyle = FontStyle.Italic)
             }
             Text(
@@ -133,18 +134,27 @@ private fun NoticeRow(n: Notice, onOpen: (Int) -> Unit, onOpenUser: (String) -> 
                 style = MaterialTheme.typography.labelSmall,
                 color = TextDim,
             )
-            val actionable = n.type == NoticeType.FRIEND_REQUEST || n.type == NoticeType.SUGGESTION
+            val actionable = n.type == NoticeType.FRIEND_REQUEST || hasNote
             if (actionable && !n.handled) {
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.padding(top = 4.dp)) {
-                    if (n.type == NoticeType.FRIEND_REQUEST) {
-                        Button(onClick = { run { social.acceptFriend(n) } }, shape = RoundedCornerShape(10.dp)) { Text("Accept") }
-                    } else {
-                        Button(onClick = { run { social.respondToSuggestion(n, true) } }, shape = RoundedCornerShape(10.dp)) { Text("I'm in") }
-                        OutlinedButton(onClick = { run { social.respondToSuggestion(n, false) } }, shape = RoundedCornerShape(10.dp)) { Text("Pass") }
+                    when (n.type) {
+                        NoticeType.FRIEND_REQUEST ->
+                            Button(onClick = { run { social.acceptFriend(n) } }, shape = RoundedCornerShape(10.dp)) { Text("Accept") }
+                        NoticeType.SUGGESTION -> {
+                            Button(onClick = { run { social.respondToSuggestion(n, true) } }, shape = RoundedCornerShape(10.dp)) { Text("I'm in") }
+                            OutlinedButton(onClick = { run { social.respondToSuggestion(n, false) } }, shape = RoundedCornerShape(10.dp)) { Text("Pass") }
+                        }
+                        else -> {
+                            Button(onClick = { run { social.answerRecommendation(n, true) } }, shape = RoundedCornerShape(10.dp)) { Text("Add to my list") }
+                            OutlinedButton(onClick = { run { social.answerRecommendation(n, false) } }, shape = RoundedCornerShape(10.dp)) { Text("Not now") }
+                        }
                     }
                 }
             } else if (actionable) {
-                Text("Done", style = MaterialTheme.typography.labelSmall, color = TextDim)
+                Text(
+                    if (n.type == NoticeType.RECOMMENDATION && n.accepted == true) "Added to your list" else "Done",
+                    style = MaterialTheme.typography.labelSmall, color = TextDim,
+                )
             }
         }
         if (!n.read) {

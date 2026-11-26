@@ -37,9 +37,11 @@ import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.kumo.anime.Graph
 import com.kumo.anime.data.AniList
-import com.kumo.anime.data.Anime
-import com.kumo.anime.data.GENRES
+import com.kumo.anime.data.FILTERS
+import com.kumo.anime.data.Filter
+import com.kumo.anime.data.Show
 import com.kumo.anime.data.Sort
+import com.kumo.anime.data.partLabel
 import com.kumo.anime.ui.AnimeCard
 import com.kumo.anime.ui.Pill
 import com.kumo.anime.ui.ScreenTitle
@@ -56,8 +58,8 @@ import kotlinx.coroutines.launch
 data class DiscoverState(
     val query: String = "",
     val sort: Sort = Sort.POPULAR,
-    val genre: String? = null,
-    val items: List<Anime> = emptyList(),
+    val filter: Filter? = null,
+    val items: List<Show> = emptyList(),
     val loading: Boolean = false,
     val endReached: Boolean = false,
     val error: String? = null,
@@ -87,9 +89,9 @@ class DiscoverViewModel : ViewModel() {
         reload()
     }
 
-    fun setGenre(g: String?) {
-        if (g == _state.value.genre) return
-        _state.update { it.copy(genre = g) }
+    fun setFilter(f: Filter?) {
+        if (f == _state.value.filter) return
+        _state.update { it.copy(filter = f) }
         reload()
     }
 
@@ -106,23 +108,31 @@ class DiscoverViewModel : ViewModel() {
         loadJob = viewModelScope.launch {
             _state.update { it.copy(loading = true, error = null) }
             try {
-                // One quiet retry covers the phone's network waking up.
-                val result = try {
-                    AniList.browse(page + 1, s.sort, s.genre, s.query)
-                } catch (e: CancellationException) {
-                    throw e
-                } catch (e: Exception) {
-                    delay(1500)
-                    AniList.browse(page + 1, s.sort, s.genre, s.query)
+                // Seasons fold into one card, so a page can add few new shows. Keep going until
+                // there's a decent batch to show.
+                var added = 0
+                var rounds = 0
+                var more = true
+                while (more && added < 18 && rounds < 3) {
+                    // One quiet retry covers the phone's network waking up.
+                    val result = try {
+                        AniList.browse(page + 1, s.sort, s.filter, s.query)
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (e: Exception) {
+                        delay(1500)
+                        AniList.browse(page + 1, s.sort, s.filter, s.query)
+                    }
+                    page++
+                    rounds++
+                    more = result.hasNext
+                    _state.update { st ->
+                        val merged = (st.items + result.items).distinctBy { it.anime.id }
+                        added += merged.size - st.items.size
+                        st.copy(items = merged, endReached = !more)
+                    }
                 }
-                page++
-                _state.update { st ->
-                    st.copy(
-                        items = (st.items + result.items).distinctBy { it.id },
-                        endReached = !result.hasNext,
-                        loading = false,
-                    )
-                }
+                _state.update { it.copy(loading = false) }
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
@@ -160,26 +170,31 @@ fun DiscoverScreen(onOpen: (Int) -> Unit, vm: DiscoverViewModel = viewModel()) {
             item(span = { GridItemSpan(maxLineSpan) }) {
                 Column(Modifier.padding(top = 12.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                     if (s.query.isBlank()) {
-                        Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                            Sort.entries.forEach { sort ->
+                        LazyRow(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                            items(Sort.entries) { sort ->
                                 Pill(sort.label, s.sort == sort, { vm.setSort(sort); toTop() }, outlined = false)
                             }
                         }
                     }
                     LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                        item { Pill("All", s.genre == null, { vm.setGenre(null); toTop() }) }
-                        items(GENRES) { g -> Pill(g, s.genre == g, { vm.setGenre(g); toTop() }) }
+                        item { Pill("All", s.filter == null, { vm.setFilter(null); toTop() }) }
+                        items(FILTERS) { f -> Pill(f.label, s.filter == f, { vm.setFilter(f); toTop() }) }
                     }
                 }
             }
-            itemsIndexed(s.items, key = { _, a -> a.id }) { i, a ->
-                if (i >= s.items.size - 9) LaunchedEffect(s.items.size) { vm.loadMore() }
+            // In search and in the Airing and Upcoming lists, say which season put the show there.
+            val nameSeason = s.query.isNotBlank() || s.sort == Sort.AIRING || s.sort == Sort.UPCOMING
+            itemsIndexed(s.items, key = { _, show -> show.anime.id }) { i, show ->
+                if (i >= s.items.size - 15) LaunchedEffect(s.items.size) { vm.loadMore() }
+                val a = show.anime
+                val score = (if (s.sort == Sort.TOP) show.via?.score else null) ?: a.score
                 AnimeCard(
                     title = a.title,
                     cover = a.cover,
                     tint = a.color,
                     status = statusById[a.id],
-                    caption = a.score?.let { "$it% · ${a.year ?: a.format ?: ""}".trimEnd(' ', '·') } ?: a.meta,
+                    caption = if (nameSeason && show.via != null) partLabel(a, show.via)
+                    else score?.let { "$it% · ${a.year ?: a.format ?: ""}".trimEnd(' ', '·') } ?: a.meta,
                     onClick = { onOpen(a.id) },
                 )
             }

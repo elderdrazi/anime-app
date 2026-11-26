@@ -116,7 +116,7 @@ fun ProfileScreen(uid: String, onBack: () -> Unit, onOpen: (Int) -> Unit) {
                         when {
                             my > theirs.progress -> "You're ${my - theirs.progress} ahead"
                             my < theirs.progress -> "${theirs.progress - my} ahead of you"
-                            else -> "Neck and neck · ep $my"
+                            else -> "Neck and neck"
                         }
                     }
                 }

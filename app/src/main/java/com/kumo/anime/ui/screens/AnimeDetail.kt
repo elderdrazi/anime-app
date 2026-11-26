@@ -19,6 +19,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
@@ -34,9 +35,18 @@ import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.ArrowBack
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.material.icons.outlined.Add
+import androidx.compose.material.icons.outlined.CheckCircle
 import androidx.compose.material.icons.outlined.Groups
+import androidx.compose.material.icons.outlined.PlayCircle
+import androidx.compose.material.icons.outlined.RadioButtonUnchecked
+import androidx.compose.material.icons.outlined.Recommend
 import androidx.compose.material.icons.outlined.Remove
+import androidx.compose.ui.graphics.vector.ImageVector
+import com.kumo.anime.data.Series
+import com.kumo.anime.data.buildSeries
+import com.kumo.anime.ui.theme.Mint
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
@@ -95,11 +105,16 @@ import kotlinx.coroutines.launch
 
 @Composable
 fun AnimeDetailScreen(id: Int, onBack: () -> Unit, onOpenUser: (String) -> Unit) {
-    var anime by remember(id) { mutableStateOf(AniList.cached(id)) }
+    // [id] can be any season; the page is always for the whole show.
+    var anime by remember(id) { mutableStateOf(AniList.cachedShow(id)) }
     var error by remember { mutableStateOf<String?>(null) }
     var attempt by remember { mutableStateOf(0) }
     LaunchedEffect(id, attempt) {
-        if (anime == null) runCatching { AniList.get(id) }.onSuccess { anime = it }.onFailure { error = it.message }
+        if (anime?.full != true) {
+            runCatching { AniList.show(id) }
+                .onSuccess { anime = it }
+                .onFailure { if (anime == null) error = it.message }
+        }
     }
     Box(Modifier.fillMaxSize()) {
         when {
@@ -128,25 +143,36 @@ private fun DetailContent(anime: Anime, onOpenUser: (String) -> Unit) {
     val session by social.session.collectAsStateWithLifecycle()
     val signedIn = session is Session.Ready
     val mine by social.myEntries.collectAsStateWithLifecycle()
-    val entry = mine.firstOrNull { it.animeId == anime.id }
+    // The show's seasons load just after the page opens; until then it's treated as a single season.
+    var loaded by remember(anime.id) { mutableStateOf(AniList.cachedSeries(anime.id)) }
+    LaunchedEffect(anime.id) {
+        if (loaded == null) loaded = runCatching { AniList.series(anime.id) }.getOrNull()
+    }
+    val series = loaded ?: remember(anime) { buildSeries(anime, listOf(anime)) }
+    val entry = remember(mine, loaded, anime) { social.entryFor(anime, loaded) }
     val friends by social.friends.collectAsStateWithLifecycle()
     var friendEntries by remember { mutableStateOf<List<FriendEntry>>(emptyList()) }
-    LaunchedEffect(friends, anime.id) {
-        if (signedIn && friends.isNotEmpty()) friendEntries = runCatching { social.friendEntries(anime.id) }.getOrDefault(emptyList())
+    LaunchedEffect(friends, anime.id, loaded) {
+        if (signedIn && friends.isNotEmpty()) friendEntries = runCatching { social.friendEntries(anime, loaded) }.getOrDefault(emptyList())
     }
     val scope = rememberCoroutineScope()
     val snackbar = LocalSnackbar.current
-    var showPicker by remember { mutableStateOf(false) }
-    var showSetEpisode by remember { mutableStateOf(false) }
+    var sheet by remember { mutableStateOf<SendKind?>(null) }
+    // The season whose episode is being typed in, by position among the released ones.
+    var settingPart by remember { mutableStateOf<Int?>(null) }
     var expanded by remember { mutableStateOf(false) }
+    val progress = entry?.progress ?: 0
+    val position = series.locate(progress)
 
-    fun act(block: suspend () -> Unit) {
+    fun act(block: suspend (Series) -> Unit) {
         if (!signedIn) {
             scope.launch { snackbar.showSnackbar("Set up sign-in to save your list") }
             return
         }
         scope.launch {
-            runCatching { block() }.onFailure { snackbar.showSnackbar("Couldn't save. Check your connection.") }
+            // Saving needs the real season list, so wait for it if it's still on its way.
+            runCatching { block(AniList.series(anime.id).also { loaded = it }) }
+                .onFailure { snackbar.showSnackbar("Couldn't save. Check your connection.") }
         }
     }
 
@@ -185,7 +211,12 @@ private fun DetailContent(anime: Anime, onOpenUser: (String) -> Unit) {
                         Text(anime.nativeTitle, style = MaterialTheme.typography.bodySmall, color = TextDim, maxLines = 1)
                     }
                     Spacer(Modifier.height(4.dp))
-                    Text(anime.meta, style = MaterialTheme.typography.bodySmall, color = TextDim)
+                    val meta = if (!series.multi) anime.meta else listOfNotNull(
+                        anime.year?.toString(),
+                        "${series.parts.size} parts",
+                        series.total?.let { "$it eps" },
+                    ).joinToString(" · ")
+                    Text(meta, style = MaterialTheme.typography.bodySmall, color = TextDim)
                     val extra = listOfNotNull(anime.score?.let { "$it% rating" }, anime.studio).joinToString(" · ")
                     if (extra.isNotEmpty()) Text(extra, style = MaterialTheme.typography.bodySmall, color = TextDim)
                 }
@@ -198,18 +229,18 @@ private fun DetailContent(anime: Anime, onOpenUser: (String) -> Unit) {
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 WatchStatus.entries.forEach { st ->
                     StatusChoice(st, entry?.status == st, Modifier.weight(1f)) {
-                        act { social.setStatus(anime, if (entry?.status == st) null else st) }
+                        act { s -> social.setStatus(anime, s, if (entry?.status == st) null else st) }
                     }
                 }
             }
 
             if (entry?.status == WatchStatus.WATCHING || friendEntries.any { it.entry.status == WatchStatus.WATCHING }) {
                 EpisodeTracker(
-                    anime = anime,
+                    series = series,
                     myProgress = entry?.progress?.takeIf { entry.status == WatchStatus.WATCHING },
                     friends = friendEntries,
-                    onStep = { d -> act { social.setProgress(anime, (entry?.progress ?: 0) + d, friendEntries) } },
-                    onSetExact = { showSetEpisode = true },
+                    onStep = { d -> act { s -> social.setProgress(anime, s, progress + d, friendEntries) } },
+                    onSetExact = { settingPart = position?.index ?: 0 },
                     onOpenUser = onOpenUser,
                 )
             } else if (friendEntries.isNotEmpty()) {
@@ -230,15 +261,28 @@ private fun DetailContent(anime: Anime, onOpenUser: (String) -> Unit) {
                 }
             }
 
+            if (series.multi) {
+                SeasonList(
+                    series = series,
+                    progress = if (entry == null || entry.status == WatchStatus.PLANNED) 0 else progress,
+                    onPick = { i -> if (signedIn) settingPart = i },
+                )
+            }
+
             if (signedIn) {
-                FilledTonalButton(
-                    onClick = { showPicker = true },
-                    shape = RoundedCornerShape(12.dp),
-                    modifier = Modifier.fillMaxWidth().height(46.dp),
-                ) {
-                    Icon(Icons.Outlined.Groups, null, Modifier.size(18.dp))
-                    Spacer(Modifier.width(8.dp))
-                    Text("Watch together")
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    SendKind.entries.forEach { kind ->
+                        FilledTonalButton(
+                            onClick = { sheet = kind },
+                            shape = RoundedCornerShape(12.dp),
+                            contentPadding = PaddingValues(horizontal = 8.dp),
+                            modifier = Modifier.weight(1f).height(46.dp),
+                        ) {
+                            Icon(kind.icon, null, Modifier.size(18.dp))
+                            Spacer(Modifier.width(8.dp))
+                            Text(kind.title, maxLines = 1)
+                        }
+                    }
                 }
             }
 
@@ -277,16 +321,96 @@ private fun DetailContent(anime: Anime, onOpenUser: (String) -> Unit) {
         }
     }
 
-    if (showPicker) {
-        WatchTogetherSheet(anime, friendEntries, onDismiss = { showPicker = false })
+    sheet?.let { kind -> SendSheet(kind, anime, friendEntries, onDismiss = { sheet = null }) }
+    settingPart?.let { index ->
+        val part = series.watchable.getOrNull(index)
+        val length = series.lengthOf(index)
+        if (part == null) {
+            settingPart = null
+        } else {
+            SetEpisodeDialog(
+                title = if (series.multi) "${part.label}: which episode?" else "Which episode are you on?",
+                // Opens on your episode in the season you're on, or the whole season for any other.
+                current = position?.takeIf { it.index == index }?.episode ?: length ?: 1,
+                total = length,
+                onDismiss = { settingPart = null },
+                onSet = { ep ->
+                    settingPart = null
+                    act { s -> social.setProgress(anime, s, s.offsetOf(index) + (s.lengthOf(index)?.let { ep.coerceAtMost(it) } ?: ep), friendEntries) }
+                },
+            )
+        }
     }
-    if (showSetEpisode) {
-        SetEpisodeDialog(
-            current = entry?.progress ?: 0,
-            total = anime.episodes,
-            onDismiss = { showSetEpisode = false },
-            onSet = { ep -> showSetEpisode = false; act { social.setProgress(anime, ep, friendEntries) } },
-        )
+}
+
+/** The two things you can send a friend from a show's page. */
+private enum class SendKind(val title: String, val icon: ImageVector, val blurb: String, val hint: String) {
+    TOGETHER("Watch together", Icons.Outlined.Groups, "Suggest watching %s with a friend.", "friday night?"),
+    RECOMMEND("Recommend", Icons.Outlined.Recommend, "Tell a friend they should watch %s.", "you'd love this"),
+}
+
+@Composable
+private fun SeasonList(series: Series, progress: Int, onPick: (Int) -> Unit) {
+    Card(padding = PaddingValues(vertical = 6.dp)) {
+        Column {
+            Text(
+                "Seasons and films",
+                style = MaterialTheme.typography.labelMedium,
+                color = TextDim,
+                modifier = Modifier.padding(start = 14.dp, top = 8.dp, bottom = 4.dp),
+            )
+            series.parts.forEach { part ->
+                val index = series.watchable.indexOf(part)
+                val length = series.lengthOf(index)
+                val seen = if (index < 0) 0 else (progress - series.offsetOf(index)).coerceAtLeast(0)
+                val done = index >= 0 && length != null && seen >= length && progress > 0
+                val current = index >= 0 && !done && seen > 0
+                Row(
+                    Modifier.fillMaxWidth()
+                        .then(if (index >= 0) Modifier.clickable { onPick(index) } else Modifier)
+                        .padding(horizontal = 14.dp, vertical = 9.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Icon(
+                        when {
+                            done -> Icons.Outlined.CheckCircle
+                            current -> Icons.Outlined.PlayCircle
+                            else -> Icons.Outlined.RadioButtonUnchecked
+                        },
+                        contentDescription = when {
+                            done -> "Watched"
+                            current -> "In progress"
+                            else -> null
+                        },
+                        tint = when {
+                            done -> Mint
+                            current -> Accent
+                            else -> Hairline
+                        },
+                        modifier = Modifier.size(20.dp),
+                    )
+                    Spacer(Modifier.width(12.dp))
+                    Column(Modifier.weight(1f)) {
+                        Text(
+                            part.label,
+                            style = MaterialTheme.typography.labelLarge,
+                            color = if (part.released) TextBody else TextDim,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                        Text(part.meta, style = MaterialTheme.typography.labelSmall, color = TextDim, maxLines = 1)
+                    }
+                    if (current) {
+                        Spacer(Modifier.width(8.dp))
+                        Text(
+                            if (length != null) "$seen / $length" else "Ep $seen",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = Accent,
+                        )
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -312,23 +436,36 @@ private fun StatusChoice(status: WatchStatus, selected: Boolean, modifier: Modif
 
 @Composable
 private fun EpisodeTracker(
-    anime: Anime,
+    series: Series,
     myProgress: Int?,
     friends: List<FriendEntry>,
     onStep: (Int) -> Unit,
     onSetExact: () -> Unit,
     onOpenUser: (String) -> Unit,
 ) {
-    val total = anime.episodes
+    val total = series.total
     // Unknown total (still airing): scale bars against the furthest anyone has got.
     val scaleMax = (total ?: (listOfNotNull(myProgress) + friends.map { it.entry.progress }).maxOrNull() ?: 1).coerceAtLeast(1)
     Card {
         Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
             if (myProgress != null) {
+                val pos = series.locate(myProgress)
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    Row(Modifier.weight(1f).clickable(onClick = onSetExact), verticalAlignment = Alignment.Bottom) {
-                        Text("Episode $myProgress", style = MaterialTheme.typography.titleMedium)
-                        if (total != null) Text("  / $total", style = MaterialTheme.typography.bodyMedium, color = TextDim)
+                    Column(Modifier.weight(1f).clickable(onClick = onSetExact)) {
+                        if (series.multi) {
+                            Text(
+                                pos?.part?.label ?: series.watchable.firstOrNull()?.label ?: "",
+                                style = MaterialTheme.typography.labelMedium,
+                                color = Accent,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                        }
+                        Row(verticalAlignment = Alignment.Bottom) {
+                            Text("Episode ${pos?.episode ?: 0}", style = MaterialTheme.typography.titleMedium)
+                            val of = if (pos != null) pos.of else series.lengthOf(0)
+                            if (of != null) Text("  / $of", style = MaterialTheme.typography.bodyMedium, color = TextDim)
+                        }
                     }
                     StepButton(Icons.Outlined.Remove, "Previous episode") { onStep(-1) }
                     Spacer(Modifier.width(8.dp))
@@ -351,10 +488,12 @@ private fun EpisodeTracker(
                         ProgressBar(ep / scaleMax.toFloat(), Modifier.weight(1f), color = personColor(fe.friend.uid).first)
                         Spacer(Modifier.width(10.dp))
                         Text(
-                            if (done) "done" else "ep $ep",
+                            if (done) "done" else series.label(ep) ?: "ep $ep",
                             style = MaterialTheme.typography.labelMedium,
                             color = TextDim,
-                            modifier = Modifier.width(44.dp),
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = if (series.multi) Modifier.widthIn(min = 44.dp, max = 132.dp) else Modifier.width(44.dp),
                         )
                     }
                 }
@@ -375,7 +514,7 @@ private fun StepButton(icon: androidx.compose.ui.graphics.vector.ImageVector, la
 }
 
 @Composable
-private fun SetEpisodeDialog(current: Int, total: Int?, onDismiss: () -> Unit, onSet: (Int) -> Unit) {
+private fun SetEpisodeDialog(title: String, current: Int, total: Int?, onDismiss: () -> Unit, onSet: (Int) -> Unit) {
     // Starts with the current number selected, so typing replaces it.
     var field by remember {
         mutableStateOf(TextFieldValue(current.toString(), selection = TextRange(0, current.toString().length)))
@@ -385,7 +524,7 @@ private fun SetEpisodeDialog(current: Int, total: Int?, onDismiss: () -> Unit, o
     val save = { onSet(field.text.toIntOrNull() ?: current) }
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("Which episode are you on?") },
+        title = { Text(title) },
         text = {
             OutlinedTextField(
                 value = field,
@@ -404,7 +543,7 @@ private fun SetEpisodeDialog(current: Int, total: Int?, onDismiss: () -> Unit, o
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun WatchTogetherSheet(anime: Anime, friendEntries: List<FriendEntry>, onDismiss: () -> Unit) {
+private fun SendSheet(kind: SendKind, anime: Anime, friendEntries: List<FriendEntry>, onDismiss: () -> Unit) {
     val social = Graph.social
     val friends by social.friends.collectAsStateWithLifecycle()
     var note by remember { mutableStateOf("") }
@@ -413,12 +552,12 @@ private fun WatchTogetherSheet(anime: Anime, friendEntries: List<FriendEntry>, o
     val snackbar = LocalSnackbar.current
     ModalBottomSheet(onDismissRequest = onDismiss, containerColor = Bg) {
         Column(Modifier.padding(horizontal = 20.dp).padding(bottom = 24.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-            Text("Watch together", style = MaterialTheme.typography.titleLarge)
-            Text("Suggest ${anime.title} to a friend.", color = TextDim, style = MaterialTheme.typography.bodyMedium)
+            Text(kind.title, style = MaterialTheme.typography.titleLarge)
+            Text(kind.blurb.format(anime.title), color = TextDim, style = MaterialTheme.typography.bodyMedium)
             OutlinedTextField(
                 value = note,
                 onValueChange = { note = it.take(140) },
-                placeholder = { Text("friday night?") },
+                placeholder = { Text(kind.hint) },
                 label = { Text("Note (optional)") },
                 singleLine = true,
                 shape = RoundedCornerShape(12.dp),
@@ -443,7 +582,9 @@ private fun WatchTogetherSheet(anime: Anime, friendEntries: List<FriendEntry>, o
                                 if (sending != null) return@Button
                                 sending = f.uid
                                 scope.launch {
-                                    val ok = runCatching { social.suggest(f, anime, note) }.isSuccess
+                                    val ok = runCatching {
+                                        if (kind == SendKind.TOGETHER) social.suggest(f, anime, note) else social.recommend(f, anime, note)
+                                    }.isSuccess
                                     sending = null
                                     if (ok) onDismiss()
                                     snackbar.showSnackbar(if (ok) "Sent to @${f.username}" else "Couldn't send. Try again.")
