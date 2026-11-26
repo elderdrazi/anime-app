@@ -68,6 +68,7 @@ import androidx.compose.material3.LinearProgressIndicator
 import com.kumo.anime.data.AniListException
 import com.kumo.anime.data.AniListSync
 import com.kumo.anime.data.Entry
+import com.kumo.anime.data.Progression
 import com.kumo.anime.data.Session
 import com.kumo.anime.data.SyncState
 import com.kumo.anime.data.UpdateState
@@ -94,7 +95,7 @@ import java.util.Locale
 
 /** Your own profile: who you are, your top ten, and your account details. */
 @Composable
-fun AccountScreen(onOpen: (Int) -> Unit, onOpenUser: (String) -> Unit) {
+fun AccountScreen(onOpen: (Int) -> Unit, onOpenUser: (String) -> Unit, onAchievements: (String) -> Unit) {
     val social = Graph.social
     val session by social.session.collectAsStateWithLifecycle()
     val me = (session as? Session.Ready)?.me
@@ -109,7 +110,11 @@ fun AccountScreen(onOpen: (Int) -> Unit, onOpenUser: (String) -> Unit) {
     val scope = rememberCoroutineScope()
     var addingEmail by remember { mutableStateOf(false) }
     var confirmSignOut by remember { mutableStateOf(false) }
-    val photo by remember(me.uid) { social.photoOf(me.uid) }.collectAsStateWithLifecycle()
+    val face by remember(me.uid) { social.faceOf(me.uid) }.collectAsStateWithLifecycle()
+    val photo = face.photo
+    val standing by Progression.standing.collectAsStateWithLifecycle()
+    val record by social.record.collectAsStateWithLifecycle()
+    var choosingBorder by remember { mutableStateOf(false) }
     var photoMenu by remember { mutableStateOf(false) }
     var cropping by remember { mutableStateOf<Uri?>(null) }
     // Android's own photo picker: it hands over just the one picture chosen, so no storage permission is needed.
@@ -128,13 +133,18 @@ fun AccountScreen(onOpen: (Int) -> Unit, onOpenUser: (String) -> Unit) {
             verticalArrangement = Arrangement.spacedBy(18.dp),
         ) {
             UpdateCard()
-            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(horizontal = 4.dp)) {
+            // With at least one show rated, the art of your favourites becomes a cover photo behind your name.
+            val top = remember(mine) { topRated(mine) }
+            Box(Modifier.fillMaxWidth()) {
+            if (top.isNotEmpty()) CoverPhoto(top, Modifier.fillMaxWidth().height(176.dp).clip(RoundedCornerShape(20.dp)))
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = if (top.isNotEmpty()) Modifier.align(Alignment.BottomStart).padding(14.dp) else Modifier.padding(horizontal = 4.dp),
+            ) {
                 // Tapping your picture changes it. The camera badge is the hint that it can be tapped.
                 Box {
                     Box(
-                        Modifier.clip(CircleShape).clickable(onClickLabel = "Change your profile picture") {
-                            if (photo == null) pickPhoto() else photoMenu = true
-                        },
+                        Modifier.clip(CircleShape).clickable(onClickLabel = "Change your picture or border") { photoMenu = true },
                     ) { Avatar(me.username, me.uid, 68.dp) }
                     Box(
                         Modifier.align(Alignment.BottomEnd).offset(x = 3.dp, y = 3.dp).size(26.dp)
@@ -142,25 +152,44 @@ fun AccountScreen(onOpen: (Int) -> Unit, onOpenUser: (String) -> Unit) {
                         contentAlignment = Alignment.Center,
                     ) { Icon(Icons.Outlined.PhotoCamera, null, Modifier.size(13.dp), tint = TextBody) }
                     DropdownMenu(expanded = photoMenu, onDismissRequest = { photoMenu = false }) {
-                        DropdownMenuItem(text = { Text("Choose a new picture") }, onClick = { photoMenu = false; pickPhoto() })
                         DropdownMenuItem(
-                            text = { Text("Remove picture") },
-                            onClick = {
-                                photoMenu = false
-                                scope.launch {
-                                    runCatching { social.setPhoto(null) }
-                                        .onFailure { snackbar.showSnackbar(it.message ?: "Couldn't remove your picture.") }
-                                }
-                            },
+                            text = { Text(if (photo == null) "Choose a picture" else "Choose a new picture") },
+                            onClick = { photoMenu = false; pickPhoto() },
                         )
+                        DropdownMenuItem(text = { Text("Choose a border") }, onClick = { photoMenu = false; choosingBorder = true })
+                        if (photo != null) {
+                            DropdownMenuItem(
+                                text = { Text("Remove picture") },
+                                onClick = {
+                                    photoMenu = false
+                                    scope.launch {
+                                        runCatching { social.setPhoto(null) }
+                                            .onFailure { snackbar.showSnackbar(it.message ?: "Couldn't remove your picture.") }
+                                    }
+                                },
+                            )
+                        }
                     }
                 }
                 Spacer(Modifier.width(16.dp))
                 Column {
-                    Text("@${me.username}", style = MaterialTheme.typography.headlineSmall)
-                    if (since != null) Text("Member since $since", style = MaterialTheme.typography.bodySmall, color = TextDim)
+                    Text("@${me.username}", style = MaterialTheme.typography.headlineSmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    if (since != null) {
+                        Text(
+                            "Member since $since", style = MaterialTheme.typography.bodySmall,
+                            color = if (top.isNotEmpty()) TextBody else TextDim,
+                        )
+                    }
                 }
             }
+            }
+
+            // Level and achievements. Shown from what was last saved until the live numbers are ready.
+            LevelCard(
+                xp = standing?.xp ?: record.xp,
+                unlocked = standing?.unlocked?.size ?: record.unlocked.size,
+                onClick = { onAchievements(me.uid) },
+            )
 
             Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                 Stat(mine.count { it.status == WatchStatus.WATCHING }, "Watching", Modifier.weight(1f))
@@ -168,7 +197,6 @@ fun AccountScreen(onOpen: (Int) -> Unit, onOpenUser: (String) -> Unit) {
                 Stat(mine.count { it.status == WatchStatus.WATCHED }, "Watched", Modifier.weight(1f))
             }
 
-            val top = remember(mine) { topRated(mine) }
             if (top.isEmpty()) {
                 Card {
                     Column {
@@ -247,6 +275,15 @@ fun AccountScreen(onOpen: (Int) -> Unit, onOpenUser: (String) -> Unit) {
         }
     }
 
+    if (choosingBorder) {
+        BorderDialog(
+            me.username, me.uid,
+            level = standing?.level ?: record.level,
+            achievements = standing?.unlocked?.size ?: record.unlocked.size,
+            current = face.frame,
+            onDismiss = { choosingBorder = false },
+        )
+    }
     cropping?.let { uri ->
         PhotoCropDialog(
             uri,

@@ -62,7 +62,12 @@ import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
 import com.kumo.anime.Graph
 import com.kumo.anime.MainActivity
+import androidx.compose.material3.SnackbarDuration
+import androidx.compose.material3.SnackbarResult
 import com.kumo.anime.data.AniListSync
+import com.kumo.anime.data.Progression
+import com.kumo.anime.data.rankFor
+import com.kumo.anime.ui.screens.AchievementsScreen
 import com.kumo.anime.data.Session
 import com.kumo.anime.data.UpdateState
 import com.kumo.anime.data.Updater
@@ -132,6 +137,24 @@ private fun MainScaffold(pending: StateFlow<Intent?>, onHandled: () -> Unit) {
     val session by social.session.collectAsStateWithLifecycle()
     val signedInAs = (session as? Session.Ready)?.me?.uid
     LaunchedEffect(signedInAs) { if (signedInAs != null) AniListSync.syncNow(minGap = 10 * 60 * 1000L) }
+    // Announce achievements and level-ups as they happen. "View" opens the full list.
+    LaunchedEffect(signedInAs) {
+        val uid = signedInAs ?: return@LaunchedEffect
+        Progression.news.collect { news ->
+            val first = news.unlocked.firstOrNull()
+            val message = when {
+                news.unlocked.size > 1 -> "${news.unlocked.size} achievements unlocked" + (news.level?.let { " · Level $it" } ?: "")
+                first != null -> "Achievement unlocked: ${first.title} · +${first.tier.xp} XP" + (news.level?.let { " · Level $it" } ?: "")
+                news.level != null -> "Level up! You're now level ${news.level}, ${rankFor(news.level)}."
+                else -> return@collect
+            }
+            // Launched separately so one message waiting on screen doesn't hold up the next.
+            launch {
+                val tapped = snackbar.showSnackbar(message, actionLabel = "View", duration = SnackbarDuration.Short)
+                if (tapped == SnackbarResult.ActionPerformed) nav.navigate("achievements/$uid")
+            }
+        }
+    }
     // The version whose banner was closed. It stays closed until the app is next opened.
     var bannerHidden by rememberSaveable { mutableStateOf<String?>(null) }
 
@@ -211,7 +234,11 @@ private fun MainScaffold(pending: StateFlow<Intent?>, onHandled: () -> Unit) {
                 composable("library") { LibraryScreen(onOpen = openAnime) }
                 composable("friends") { FriendsScreen(onOpenUser = openUser) }
                 composable("inbox") { InboxScreen(onOpen = openAnime, onOpenUser = openUser) }
-                composable("me") { AccountScreen(onOpen = openAnime, onOpenUser = openUser) }
+                val openAchievements: (String) -> Unit = { nav.navigate("achievements/$it") }
+                composable("me") { AccountScreen(onOpen = openAnime, onOpenUser = openUser, onAchievements = openAchievements) }
+                composable("achievements/{uid}") {
+                    AchievementsScreen(uid = it.arguments!!.getString("uid")!!, onBack = { nav.popBackStack() })
+                }
                 composable("anime/{id}", listOf(navArgument("id") { type = NavType.IntType })) {
                     AnimeDetailScreen(
                         id = it.arguments!!.getInt("id"),
@@ -224,6 +251,7 @@ private fun MainScaffold(pending: StateFlow<Intent?>, onHandled: () -> Unit) {
                         uid = it.arguments!!.getString("uid")!!,
                         onBack = { nav.popBackStack() },
                         onOpen = openAnime,
+                        onAchievements = openAchievements,
                     )
                 }
             }

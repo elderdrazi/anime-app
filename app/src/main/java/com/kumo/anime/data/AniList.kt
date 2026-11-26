@@ -151,6 +151,15 @@ object AniList {
 
     /** Restores the entry-to-show map from the last run, so repeat visits skip the lookups. */
     fun init(ctx: Context) {
+        bannerFile = File(ctx.filesDir, "banners.txt").also { saved ->
+            runCatching {
+                if (saved.exists()) saved.forEachLine { line ->
+                    val at = line.indexOf('=')
+                    val id = if (at > 0) line.substring(0, at).toIntOrNull() else null
+                    if (id != null) bannerUrls[id] = line.substring(at + 1)
+                }
+            }
+        }
         val f = File(ctx.filesDir, "show-map.txt")
         mapFile = f
         runCatching {
@@ -458,6 +467,51 @@ object AniList {
             if (missing.isEmpty()) return
             load(missing)
         }
+    }
+
+    /**
+     * The few facts achievements need about each show (genres, format, year and so on), up to 50
+     * shows a request. Ids AniList doesn't know come back empty, so they aren't asked for again.
+     */
+    suspend fun details(ids: Collection<Int>): Map<Int, ShowMeta> {
+        val query = "query (\$ids: [Int]) { Page(perPage: 50) { media(id_in: \$ids, type: ANIME) {" +
+            " id format seasonYear startDate { year month day } genres popularity averageScore" +
+            " studios(isMain: true) { nodes { name } } } } }"
+        val vars = buildJsonObject { putJsonArray("ids") { ids.forEach { add(it) } } }
+        val out = HashMap<Int, ShowMeta>()
+        post(query, vars).page?.media?.forEach { m ->
+            out[m.id] = ShowMeta(
+                m.genres.orEmpty(), m.format, m.seasonYear ?: m.startDate?.year,
+                m.popularity, m.averageScore, m.studios?.nodes?.firstOrNull()?.name,
+            )
+        }
+        ids.forEach { out.putIfAbsent(it, ShowMeta()) }
+        return out
+    }
+
+    // ---- banner art ----
+
+    /** Show id to its wide banner image; an empty string means the show has none. Kept across runs. */
+    private val bannerUrls = ConcurrentHashMap<Int, String>()
+    private var bannerFile: File? = null
+
+    /** The wide banner image for each of these shows that has one. One request for any not yet known. */
+    suspend fun banners(ids: Collection<Int>): Map<Int, String> {
+        for (id in ids) {
+            if (!bannerUrls.containsKey(id)) nodes[id]?.anime?.takeIf { it.full }?.let { bannerUrls[id] = it.banner.orEmpty() }
+        }
+        val missing = ids.filter { !bannerUrls.containsKey(it) }.distinct().take(50)
+        if (missing.isNotEmpty()) {
+            val query = "query (\$ids: [Int]) { Page(perPage: 50) { media(id_in: \$ids, type: ANIME) { id bannerImage } } }"
+            val vars = buildJsonObject { putJsonArray("ids") { missing.forEach { add(it) } } }
+            val found = post(query, vars).page?.media.orEmpty()
+            found.forEach { bannerUrls[it.id] = it.bannerImage.orEmpty() }
+            missing.forEach { bannerUrls.putIfAbsent(it, "") }
+            withContext(Dispatchers.IO) {
+                runCatching { bannerFile?.writeText(bannerUrls.entries.joinToString("\n") { "${it.key}=${it.value}" }) }
+            }
+        }
+        return ids.mapNotNull { id -> bannerUrls[id]?.takeIf { it.isNotEmpty() }?.let { id to it } }.toMap()
     }
 
     // ---- transport ----

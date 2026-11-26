@@ -16,8 +16,10 @@ object Graph {
     fun init(app: Application) {
         com.kumo.anime.data.AniList.init(app)
         com.kumo.anime.data.AniListSync.init(app)
+        com.kumo.anime.data.ShowInfo.init(app)
         social = Social(app)
         social.start()
+        com.kumo.anime.data.Progression.start(social)
     }
 }
 

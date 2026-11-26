@@ -8,6 +8,8 @@ import androidx.compose.ui.graphics.asImageBitmap
 import com.google.firebase.firestore.Blob
 import com.google.firebase.firestore.FieldValue
 import com.google.firebase.firestore.Source
+import java.util.Calendar
+import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.withContext
@@ -56,7 +58,30 @@ enum class WatchStatus(val key: String, val label: String) {
     }
 }
 
-data class Profile(val uid: String, val username: String, val createdAt: Long = 0)
+data class Profile(
+    val uid: String,
+    val username: String,
+    val createdAt: Long = 0,
+    val xp: Int = 0,
+    val level: Int = 1,
+    /** Achievement id to when it was unlocked. */
+    val unlocked: Map<String, Long> = emptyMap(),
+)
+
+/** How a person appears wherever their avatar is drawn: their picture, if any, and the border around it. */
+data class Face(val photo: ImageBitmap? = null, val frame: Frame = Frame.NONE)
+
+/** What's saved on your own profile about your progress. [loaded] is false until it has arrived. */
+data class Record(
+    val loaded: Boolean = false,
+    val tracked: Tracked = Tracked(),
+    val unlocked: Map<String, Long> = emptyMap(),
+    val xp: Int = 0,
+    /** 0 when no level has ever been saved. */
+    val level: Int = 0,
+    val frame: Frame = Frame.NONE,
+    val photo: Boolean = false,
+)
 
 data class Entry(
     val animeId: Int,
@@ -162,7 +187,25 @@ class Social(private val app: Context) {
         session.flatMapLatest { s -> if (s is Session.Ready) block(s.me) else flowOf(empty) }
             .stateIn(scope, SharingStarted.Eagerly, empty)
 
-    val myEntries: StateFlow<List<Entry>> = whenReady(emptyList()) { entriesOf(it.uid) }
+    private val _listReady = MutableStateFlow(false)
+    /** False until your list has arrived from the database, so an empty list isn't mistaken for a real one. */
+    val listReady: StateFlow<Boolean> = _listReady.asStateFlow()
+
+    val myEntries: StateFlow<List<Entry>> = whenReady(emptyList()) { me ->
+        _listReady.value = false
+        entriesOf(me.uid).onEach { _listReady.value = true }
+    }
+
+    /** Your saved progress: counters, unlocked achievements, level and chosen border. */
+    val record: StateFlow<Record> = whenReady(Record()) { me ->
+        callbackFlow {
+            val reg = userDoc(me.uid).addSnapshotListener { snap, err ->
+                if (err != null) Log.w(TAG, "profile listener failed", err)
+                if (snap != null && snap.exists()) trySend(toRecord(snap))
+            }
+            awaitClose { reg.remove() }
+        }
+    }
     val friends: StateFlow<List<Friend>> = whenReady(emptyList()) { me ->
         db.collection("users").document(me.uid).collection("friends").listen { d ->
             d.getString("username")?.let { Friend(d.id, it) }
@@ -286,29 +329,68 @@ class Social(private val app: Context) {
     // A picture is a small JPEG kept in the person's own profile document, so it needs no separate
     // file storage. Each one is fetched once per run of the app and then kept in memory.
 
-    private val photos = HashMap<String, MutableStateFlow<ImageBitmap?>>()
-    private val noPhoto = MutableStateFlow<ImageBitmap?>(null)
+    private val faces = HashMap<String, MutableStateFlow<Face>>()
+    private val noFace = MutableStateFlow(Face())
 
-    /** A person's profile picture: null while it loads, and when they haven't set one. */
-    fun photoOf(uid: String): StateFlow<ImageBitmap?> {
-        if (!enabled || uid.isEmpty()) return noPhoto
-        return photos.getOrPut(uid) {
-            MutableStateFlow<ImageBitmap?>(null).also { flow -> scope.launch { loadPhoto(uid, flow) } }
+    private fun userDoc(uid: String) = db.collection("users").document(uid)
+
+    /** A person's picture and border. Plain until it loads, and for people who haven't set either. */
+    fun faceOf(uid: String): StateFlow<Face> {
+        if (!enabled || uid.isEmpty()) return noFace
+        return faces.getOrPut(uid) {
+            MutableStateFlow(Face()).also { flow -> scope.launch { loadFace(uid, flow) } }
         }
     }
 
-    private suspend fun loadPhoto(uid: String, into: MutableStateFlow<ImageBitmap?>) {
-        val ref = db.collection("users").document(uid)
+    private suspend fun loadFace(uid: String, into: MutableStateFlow<Face>) {
         var shown: Long? = null
-        // The copy saved on the phone shows at once; the server's replaces it if the picture changed.
+        // The copy saved on the phone shows at once; the server's replaces it if anything changed.
         for (source in listOf(Source.CACHE, Source.SERVER)) {
-            val doc = runCatching { ref.get(source).await() }.getOrNull()?.takeIf { it.exists() } ?: continue
+            val doc = runCatching { userDoc(uid).get(source).await() }.getOrNull()?.takeIf { it.exists() } ?: continue
+            val frame = Frame.of(doc.getString("frame"))
             val stamp = doc.getLong("photoAt") ?: 0
-            if (source == Source.SERVER && stamp == shown) continue
+            if (source == Source.SERVER && stamp == shown) {
+                into.value = into.value.copy(frame = frame)
+                continue
+            }
             val bytes = doc.getBlob("photo")?.toBytes()
-            into.value = bytes?.let { withContext(Dispatchers.Default) { decodePhoto(it) } }
+            into.value = Face(bytes?.let { withContext(Dispatchers.Default) { decodePhoto(it) } }, frame)
             shown = stamp
         }
+    }
+
+    /** Picks the border around your picture. Which ones are unlocked is the caller's business. */
+    suspend fun setFrame(frame: Frame) {
+        val uid = myUid ?: throw AccountException("You're not signed in.")
+        userDoc(uid).update("frame", frame.key)
+        faces.getOrPut(uid) { MutableStateFlow(Face()) }.let { it.value = it.value.copy(frame = frame) }
+    }
+
+    // ---- level and achievements ----
+
+    /** Saves newly unlocked achievements, stamped now, along with the XP and level they add up to. */
+    suspend fun saveStanding(fresh: Collection<String>, xp: Int, level: Int) {
+        val uid = myUid ?: return
+        val change = HashMap<String, Any>()
+        val at = now()
+        fresh.forEach { change["ach.$it"] = at }
+        change["xp"] = xp
+        change["level"] = level
+        userDoc(uid).update(change).await()
+    }
+
+    /** The counter changes for logging [episodes] more episodes right now: streak, best day, late nights. */
+    private fun watchedNow(episodes: Int): Map<String, Any> {
+        val cal = Calendar.getInstance()
+        fun day(c: Calendar) = c.get(Calendar.YEAR) * 10000 + (c.get(Calendar.MONTH) + 1) * 100 + c.get(Calendar.DAY_OF_MONTH)
+        val today = day(cal)
+        val hour = cal.get(Calendar.HOUR_OF_DAY)
+        cal.add(Calendar.DAY_OF_MONTH, -1)
+        val t = record.value.tracked.logged(episodes, today, day(cal), hour)
+        return mapOf(
+            "stats.lastDay" to t.lastDay, "stats.streak" to t.streak, "stats.bestStreak" to t.bestStreak,
+            "stats.dayEps" to t.dayEps, "stats.bestDay" to t.bestDay, "stats.night" to t.night,
+        )
     }
 
     /** Sets your profile picture from a small square JPEG, or removes it with null. */
@@ -318,12 +400,12 @@ class Social(private val app: Context) {
             if (jpeg == null) mapOf("photo" to FieldValue.delete(), "photoAt" to FieldValue.delete())
             else mapOf("photo" to Blob.fromBytes(jpeg), "photoAt" to now())
         try {
-            withTimeout(15_000) { db.collection("users").document(uid).update(change).await() }
+            withTimeout(15_000) { userDoc(uid).update(change).await() }
         } catch (e: Exception) {
             if (e is CancellationException && e !is TimeoutCancellationException) throw e
             throw AccountException("Couldn't save your picture. Check your connection and try again.")
         }
-        photos.getOrPut(uid) { MutableStateFlow(null) }.value = jpeg?.let(::decodePhoto)
+        faces.getOrPut(uid) { MutableStateFlow(Face()) }.let { it.value = it.value.copy(photo = jpeg?.let(::decodePhoto)) }
     }
 
     private fun decodePhoto(bytes: ByteArray): ImageBitmap? =
@@ -490,6 +572,7 @@ class Social(private val app: Context) {
         val status = if (series.isComplete(seen)) WatchStatus.WATCHED else WatchStatus.WATCHING
         val batch = db.batch()
         save(batch, uid, show, series, status, seen)
+        if (ep > oldEp) batch.update(userDoc(uid), watchedNow(ep - oldEp))
         friendEntries.filter { it.entry.status == WatchStatus.WATCHING && oldEp < it.entry.progress && ep >= it.entry.progress && it.entry.progress > 0 }
             .forEach { fe ->
                 batch.set(
@@ -553,8 +636,16 @@ class Social(private val app: Context) {
         return profile(uid)
     }
 
-    suspend fun profile(uid: String): Profile? =
-        db.collection("users").document(uid).get().await().getString("username")?.let { Profile(uid, it) }
+    suspend fun profile(uid: String): Profile? {
+        val doc = userDoc(uid).get().await()
+        val name = doc.getString("username") ?: return null
+        return Profile(
+            uid, name, doc.getLong("createdAt") ?: 0,
+            xp = doc.getLong("xp")?.toInt() ?: 0,
+            level = doc.getLong("level")?.toInt()?.coerceAtLeast(1) ?: 1,
+            unlocked = unlockedIn(doc),
+        )
+    }
 
     fun isFriend(uid: String) = friends.value.any { it.uid == uid }
 
@@ -633,13 +724,17 @@ class Social(private val app: Context) {
         noticeRef(friend.uid)
             .set(noticeMap(NoticeType.RECOMMENDATION, me, show.id, show.title, show.cover, message?.takeIf { it.isNotBlank() }))
             .await()
+        userDoc(me.uid).update("stats.recs", FieldValue.increment(1))
     }
 
     /** Answers a recommendation: add it to "Want to watch", or just clear it. */
     suspend fun answerRecommendation(n: Notice, add: Boolean) {
         val me = me ?: return
         val batch = db.batch()
-        if (add) addPlanned(batch, me.uid, n)
+        if (add) {
+            addPlanned(batch, me.uid, n)
+            batch.update(userDoc(me.uid), "stats.recsAdded", FieldValue.increment(1))
+        }
         batch.update(noticeDoc(n.id), mapOf("handled" to true, "read" to true, "accepted" to add))
         batch.commit().await()
     }
@@ -706,6 +801,29 @@ class Social(private val app: Context) {
                     val id = (k as? String)?.toIntOrNull() ?: return@mapNotNull null
                     id to ((v as? Number)?.toInt() ?: return@mapNotNull null)
                 }?.toMap(),
+            )
+        }
+
+        private fun unlockedIn(d: DocumentSnapshot): Map<String, Long> =
+            (d.get("ach") as? Map<*, *>)?.mapNotNull { (k, v) ->
+                (k as? String ?: return@mapNotNull null) to ((v as? Number)?.toLong() ?: return@mapNotNull null)
+            }?.toMap() ?: emptyMap()
+
+        fun toRecord(d: DocumentSnapshot): Record {
+            val stats = d.get("stats") as? Map<*, *>
+            fun count(key: String) = (stats?.get(key) as? Number)?.toInt() ?: 0
+            return Record(
+                loaded = true,
+                tracked = Tracked(
+                    recs = count("recs"), recsAdded = count("recsAdded"), lastDay = count("lastDay"),
+                    streak = count("streak"), bestStreak = count("bestStreak"),
+                    dayEps = count("dayEps"), bestDay = count("bestDay"), night = count("night"),
+                ),
+                unlocked = unlockedIn(d),
+                xp = d.getLong("xp")?.toInt() ?: 0,
+                level = d.getLong("level")?.toInt() ?: 0,
+                frame = Frame.of(d.getString("frame")),
+                photo = d.getBlob("photo") != null,
             )
         }
 

@@ -8,6 +8,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.kumo.anime.Graph
+import com.kumo.anime.data.Frame
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -157,28 +158,35 @@ fun ProgressBar(fraction: Float, modifier: Modifier = Modifier, color: Color = A
 }
 
 @Composable
-fun Avatar(name: String, key: String, size: Dp = 40.dp) {
+fun Avatar(name: String, key: String, size: Dp = 40.dp, frame: Frame? = null) {
     // [key] is the person's account id. Their picture shows once it's loaded; until then, and for
-    // people without one, it's their initial on their own colour.
-    val social = Graph.social
-    val photo by remember(key) { social.photoOf(key) }.collectAsStateWithLifecycle()
-    photo?.let {
-        // The faint ring keeps a dark picture from melting into the dark background.
-        Image(
-            it, "$name's picture",
-            Modifier.size(size).clip(CircleShape).border(1.dp, Color.White.copy(alpha = 0.14f), CircleShape),
-            contentScale = ContentScale.Crop,
-        )
-        return
-    }
-    val (fg, bg) = personColor(key)
-    Box(Modifier.size(size).clip(CircleShape).background(bg), contentAlignment = Alignment.Center) {
-        Text(
-            name.take(1).uppercase(),
-            color = fg,
-            fontWeight = FontWeight.SemiBold,
-            fontSize = (size.value * 0.42f).sp,
-        )
+    // people without one, it's their initial on their own colour. [frame] overrides the border they
+    // chose, for previewing one.
+    val face by remember(key) { Graph.social.faceOf(key) }.collectAsStateWithLifecycle()
+    val border = frame ?: face.frame
+    // A border is a ring at the edge with a sliver of space inside it; the picture shrinks to fit.
+    val ring = if (border == Frame.NONE) 0.dp else maxOf(2.dp, size * 0.07f)
+    val inner = if (border == Frame.NONE) size else size - (ring + maxOf(1.5.dp, size * 0.035f)) * 2
+    Box(Modifier.size(size).frameRing(border, ring), contentAlignment = Alignment.Center) {
+        val photo = face.photo
+        if (photo != null) {
+            // The faint ring keeps a dark picture from melting into the dark background.
+            Image(
+                photo, "$name's picture",
+                Modifier.size(inner).clip(CircleShape).border(1.dp, Color.White.copy(alpha = 0.14f), CircleShape),
+                contentScale = ContentScale.Crop,
+            )
+        } else {
+            val (fg, bg) = personColor(key)
+            Box(Modifier.size(inner).clip(CircleShape).background(bg), contentAlignment = Alignment.Center) {
+                Text(
+                    name.take(1).uppercase(),
+                    color = fg,
+                    fontWeight = FontWeight.SemiBold,
+                    fontSize = (inner.value * 0.42f).sp,
+                )
+            }
+        }
     }
 }
 

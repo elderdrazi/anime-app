@@ -1,5 +1,10 @@
 package com.kumo.anime.ui.screens
 
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.ui.draw.clip
+import com.kumo.anime.ui.theme.Bg
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -50,7 +55,7 @@ import com.kumo.anime.ui.theme.TextDim
 import kotlinx.coroutines.launch
 
 @Composable
-fun ProfileScreen(uid: String, onBack: () -> Unit, onOpen: (Int) -> Unit) {
+fun ProfileScreen(uid: String, onBack: () -> Unit, onOpen: (Int) -> Unit, onAchievements: (String) -> Unit) {
     val social = Graph.social
     val profile by produceState<Profile?>(null, uid) { value = runCatching { social.profile(uid) }.getOrNull() }
     val entries by remember(uid) { social.entriesOf(uid) }.collectAsStateWithLifecycle(emptyList())
@@ -66,6 +71,7 @@ fun ProfileScreen(uid: String, onBack: () -> Unit, onOpen: (Int) -> Unit) {
     val myPlanned = mine.filter { it.status == WatchStatus.PLANNED }.map { it.animeId }.toSet()
     val bothWant = entries.filter { it.status == WatchStatus.PLANNED && it.animeId in myPlanned }
     val myById = mine.associateBy { it.animeId }
+    val top = remember(entries) { topRated(entries) }
     val bothWatching = entries.filter { it.status == WatchStatus.WATCHING && myById[it.animeId]?.status == WatchStatus.WATCHING }
 
     Column(Modifier.fillMaxSize().statusBarsPadding()) {
@@ -80,9 +86,18 @@ fun ProfileScreen(uid: String, onBack: () -> Unit, onOpen: (Int) -> Unit) {
             modifier = Modifier.fillMaxSize(),
         ) {
             item(span = { GridItemSpan(maxLineSpan) }) {
-                Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally) {
+                // The art of their favourite shows as a cover photo, with their picture overlapping its lower edge.
+                val covered = top.isNotEmpty()
+                Box(Modifier.fillMaxWidth()) {
+                if (covered) CoverPhoto(top, Modifier.fillMaxWidth().height(150.dp).clip(RoundedCornerShape(20.dp)))
+                Column(
+                    Modifier.fillMaxWidth().padding(top = if (covered) 104.dp else 0.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                ) {
                     val name = profile?.username ?: ""
-                    Avatar(name.ifEmpty { "?" }, uid, 76.dp)
+                    Box(if (covered) Modifier.clip(CircleShape).background(Bg).padding(4.dp) else Modifier) {
+                        Avatar(name.ifEmpty { "?" }, uid, 76.dp)
+                    }
                     Spacer(Modifier.height(12.dp))
                     Text(if (name.isEmpty()) "" else "@$name", style = MaterialTheme.typography.headlineSmall)
                     Text(
@@ -109,8 +124,17 @@ fun ProfileScreen(uid: String, onBack: () -> Unit, onOpen: (Int) -> Unit) {
                         }
                     }
                 }
+                }
             }
-            val top = topRated(entries)
+            // Level and achievements, as last saved by their phone. Older versions of the app save none.
+            profile?.let { p ->
+                item(span = { GridItemSpan(maxLineSpan) }) {
+                    LevelCard(p.xp, p.unlocked.size, onClick = { onAchievements(uid) })
+                }
+                if (p.unlocked.isNotEmpty()) {
+                    item(span = { GridItemSpan(maxLineSpan) }) { LatestBadges(p.unlocked) { onAchievements(uid) } }
+                }
+            }
             if (top.isNotEmpty()) {
                 item(span = { GridItemSpan(maxLineSpan) }) {
                     TopTen(top, onOpen, if (top.size == 10) "Top ten" else "Top ${top.size}")
