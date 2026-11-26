@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- One-colour version for Android's themed icons: the cloud, a crescent of moon behind it, and a sparkle. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M36,72 a9,9 0 0,1 0.5,-18 a12.5,12.5 0 0,1 23,-5.5 a10,10 0 0,1 12,11 a6.5,6.5 0 0,1 0,12.5 z" />
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:fillAlpha="0.55"
+        android:pathData="M64,40 m-15,0 a15,15 0 1,0 30,0 a15,15 0 1,0 -30,0" />
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M34,29 Q34,35 40,35 Q34,35 34,41 Q34,35 28,35 Q34,35 34,29 Z" />
+</vector>

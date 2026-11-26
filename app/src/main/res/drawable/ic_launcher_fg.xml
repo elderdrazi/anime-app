@@ -1,11 +1,62 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- "Kumo" is Japanese for cloud: a cloud drifting across a glowing moon, with two sparkles. -->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:aapt="http://schemas.android.com/aapt"
     android:width="108dp"
     android:height="108dp"
     android:viewportWidth="108"
     android:viewportHeight="108">
-    <group android:translateX="-3.5" android:translateY="4">
-        <path
-            android:fillColor="@color/kumo_accent"
-            android:pathData="M34,66 a10,10 0 0,1 1,-20 a14,14 0 0,1 26,-6 a11,11 0 0,1 13,12 a7,7 0 0,1 0,14 z" />
-    </group>
+    <!-- moon glow -->
+    <path android:pathData="M64,40 m-27,0 a27,27 0 1,0 54,0 a27,27 0 1,0 -54,0">
+        <aapt:attr name="android:fillColor">
+            <gradient
+                android:type="radial"
+                android:centerX="64"
+                android:centerY="40"
+                android:gradientRadius="27">
+                <item android:offset="0" android:color="#99C9BEFF" />
+                <item android:offset="0.55" android:color="#40B4A5FF" />
+                <item android:offset="1" android:color="#00B4A5FF" />
+            </gradient>
+        </aapt:attr>
+    </path>
+    <!-- moon -->
+    <path android:pathData="M64,40 m-15,0 a15,15 0 1,0 30,0 a15,15 0 1,0 -30,0">
+        <aapt:attr name="android:fillColor">
+            <gradient
+                android:type="radial"
+                android:centerX="59"
+                android:centerY="34"
+                android:gradientRadius="22">
+                <item android:offset="0" android:color="#FFFFFFFF" />
+                <item android:offset="1" android:color="#FFC3B6FF" />
+            </gradient>
+        </aapt:attr>
+    </path>
+    <!-- the cloud's shadow where it crosses the moon -->
+    <path
+        android:fillColor="#FF1A1250"
+        android:fillAlpha="0.28"
+        android:pathData="M37.5,74 a9,9 0 0,1 0.5,-18 a12.5,12.5 0 0,1 23,-5.5 a10,10 0 0,1 12,11 a6.5,6.5 0 0,1 0,12.5 z" />
+    <!-- cloud -->
+    <path android:pathData="M36,72 a9,9 0 0,1 0.5,-18 a12.5,12.5 0 0,1 23,-5.5 a10,10 0 0,1 12,11 a6.5,6.5 0 0,1 0,12.5 z">
+        <aapt:attr name="android:fillColor">
+            <gradient
+                android:type="linear"
+                android:startX="52"
+                android:startY="40"
+                android:endX="52"
+                android:endY="72">
+                <item android:offset="0" android:color="#FFFFFFFF" />
+                <item android:offset="1" android:color="#FFD2C8FF" />
+            </gradient>
+        </aapt:attr>
+    </path>
+    <!-- sparkles -->
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M34,29 Q34,35 40,35 Q34,35 34,41 Q34,35 28,35 Q34,35 34,29 Z" />
+    <path
+        android:fillColor="#FFDCD4FF"
+        android:pathData="M45,22 Q45,25 48,25 Q45,25 45,28 Q45,25 42,25 Q45,25 45,22 Z" />
 </vector>

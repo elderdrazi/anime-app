@@ -2,7 +2,12 @@ package com.kumo.anime.ui
 
 import android.content.Context
 import android.content.Intent
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.kumo.anime.Graph
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -153,6 +158,19 @@ fun ProgressBar(fraction: Float, modifier: Modifier = Modifier, color: Color = A
 
 @Composable
 fun Avatar(name: String, key: String, size: Dp = 40.dp) {
+    // [key] is the person's account id. Their picture shows once it's loaded; until then, and for
+    // people without one, it's their initial on their own colour.
+    val social = Graph.social
+    val photo by remember(key) { social.photoOf(key) }.collectAsStateWithLifecycle()
+    photo?.let {
+        // The faint ring keeps a dark picture from melting into the dark background.
+        Image(
+            it, "$name's picture",
+            Modifier.size(size).clip(CircleShape).border(1.dp, Color.White.copy(alpha = 0.14f), CircleShape),
+            contentScale = ContentScale.Crop,
+        )
+        return
+    }
     val (fg, bg) = personColor(key)
     Box(Modifier.size(size).clip(CircleShape).background(bg), contentAlignment = Alignment.Center) {
         Text(

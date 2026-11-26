@@ -1,7 +1,17 @@
 package com.kumo.anime.data
 
 import android.content.Context
+import android.graphics.BitmapFactory
 import android.util.Log
+import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.asImageBitmap
+import com.google.firebase.firestore.Blob
+import com.google.firebase.firestore.FieldValue
+import com.google.firebase.firestore.Source
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.TimeoutCancellationException
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeout
 import com.google.firebase.FirebaseNetworkException
 import com.google.firebase.auth.EmailAuthProvider
 import com.google.firebase.auth.FirebaseAuth
@@ -271,6 +281,53 @@ class Social(private val app: Context) {
         }
         _session.value = Session.Ready(Profile(uid, name, now()))
     }
+
+    // ---- profile pictures ----
+    // A picture is a small JPEG kept in the person's own profile document, so it needs no separate
+    // file storage. Each one is fetched once per run of the app and then kept in memory.
+
+    private val photos = HashMap<String, MutableStateFlow<ImageBitmap?>>()
+    private val noPhoto = MutableStateFlow<ImageBitmap?>(null)
+
+    /** A person's profile picture: null while it loads, and when they haven't set one. */
+    fun photoOf(uid: String): StateFlow<ImageBitmap?> {
+        if (!enabled || uid.isEmpty()) return noPhoto
+        return photos.getOrPut(uid) {
+            MutableStateFlow<ImageBitmap?>(null).also { flow -> scope.launch { loadPhoto(uid, flow) } }
+        }
+    }
+
+    private suspend fun loadPhoto(uid: String, into: MutableStateFlow<ImageBitmap?>) {
+        val ref = db.collection("users").document(uid)
+        var shown: Long? = null
+        // The copy saved on the phone shows at once; the server's replaces it if the picture changed.
+        for (source in listOf(Source.CACHE, Source.SERVER)) {
+            val doc = runCatching { ref.get(source).await() }.getOrNull()?.takeIf { it.exists() } ?: continue
+            val stamp = doc.getLong("photoAt") ?: 0
+            if (source == Source.SERVER && stamp == shown) continue
+            val bytes = doc.getBlob("photo")?.toBytes()
+            into.value = bytes?.let { withContext(Dispatchers.Default) { decodePhoto(it) } }
+            shown = stamp
+        }
+    }
+
+    /** Sets your profile picture from a small square JPEG, or removes it with null. */
+    suspend fun setPhoto(jpeg: ByteArray?) {
+        val uid = myUid ?: throw AccountException("You're not signed in.")
+        val change: Map<String, Any> =
+            if (jpeg == null) mapOf("photo" to FieldValue.delete(), "photoAt" to FieldValue.delete())
+            else mapOf("photo" to Blob.fromBytes(jpeg), "photoAt" to now())
+        try {
+            withTimeout(15_000) { db.collection("users").document(uid).update(change).await() }
+        } catch (e: Exception) {
+            if (e is CancellationException && e !is TimeoutCancellationException) throw e
+            throw AccountException("Couldn't save your picture. Check your connection and try again.")
+        }
+        photos.getOrPut(uid) { MutableStateFlow(null) }.value = jpeg?.let(::decodePhoto)
+    }
+
+    private fun decodePhoto(bytes: ByteArray): ImageBitmap? =
+        runCatching { BitmapFactory.decodeByteArray(bytes, 0, bytes.size)?.asImageBitmap() }.getOrNull()
 
     // ---- lists and episode tracking ----
 

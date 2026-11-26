@@ -49,7 +49,20 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.kumo.anime.BuildConfig
 import com.kumo.anime.Graph
+import android.net.Uri
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.PickVisualMediaRequest
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.offset
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.material.icons.outlined.PhotoCamera
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.ui.draw.clip
+import com.kumo.anime.ui.theme.Bg
+import com.kumo.anime.ui.theme.Surface2
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.material3.LinearProgressIndicator
 import com.kumo.anime.data.AniListException
@@ -96,6 +109,12 @@ fun AccountScreen(onOpen: (Int) -> Unit, onOpenUser: (String) -> Unit) {
     val scope = rememberCoroutineScope()
     var addingEmail by remember { mutableStateOf(false) }
     var confirmSignOut by remember { mutableStateOf(false) }
+    val photo by remember(me.uid) { social.photoOf(me.uid) }.collectAsStateWithLifecycle()
+    var photoMenu by remember { mutableStateOf(false) }
+    var cropping by remember { mutableStateOf<Uri?>(null) }
+    // Android's own photo picker: it hands over just the one picture chosen, so no storage permission is needed.
+    val picker = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { cropping = it }
+    val pickPhoto = { picker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) }
     val since = remember(me.createdAt) {
         if (me.createdAt > 0) SimpleDateFormat("MMMM yyyy", Locale.getDefault()).format(Date(me.createdAt)) else null
     }
@@ -110,7 +129,32 @@ fun AccountScreen(onOpen: (Int) -> Unit, onOpenUser: (String) -> Unit) {
         ) {
             UpdateCard()
             Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(horizontal = 4.dp)) {
-                Avatar(me.username, me.uid, 68.dp)
+                // Tapping your picture changes it. The camera badge is the hint that it can be tapped.
+                Box {
+                    Box(
+                        Modifier.clip(CircleShape).clickable(onClickLabel = "Change your profile picture") {
+                            if (photo == null) pickPhoto() else photoMenu = true
+                        },
+                    ) { Avatar(me.username, me.uid, 68.dp) }
+                    Box(
+                        Modifier.align(Alignment.BottomEnd).offset(x = 3.dp, y = 3.dp).size(26.dp)
+                            .clip(CircleShape).background(Bg).padding(2.dp).clip(CircleShape).background(Surface2),
+                        contentAlignment = Alignment.Center,
+                    ) { Icon(Icons.Outlined.PhotoCamera, null, Modifier.size(13.dp), tint = TextBody) }
+                    DropdownMenu(expanded = photoMenu, onDismissRequest = { photoMenu = false }) {
+                        DropdownMenuItem(text = { Text("Choose a new picture") }, onClick = { photoMenu = false; pickPhoto() })
+                        DropdownMenuItem(
+                            text = { Text("Remove picture") },
+                            onClick = {
+                                photoMenu = false
+                                scope.launch {
+                                    runCatching { social.setPhoto(null) }
+                                        .onFailure { snackbar.showSnackbar(it.message ?: "Couldn't remove your picture.") }
+                                }
+                            },
+                        )
+                    }
+                }
                 Spacer(Modifier.width(16.dp))
                 Column {
                     Text("@${me.username}", style = MaterialTheme.typography.headlineSmall)
@@ -203,6 +247,16 @@ fun AccountScreen(onOpen: (Int) -> Unit, onOpenUser: (String) -> Unit) {
         }
     }
 
+    cropping?.let { uri ->
+        PhotoCropDialog(
+            uri,
+            onDismiss = { cropping = null },
+            onUse = { jpeg ->
+                social.setPhoto(jpeg)
+                cropping = null
+            },
+        )
+    }
     if (addingEmail) {
         CredentialsDialog(
             title = "Add your email",
