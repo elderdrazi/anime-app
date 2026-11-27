@@ -1,6 +1,14 @@
 package com.kumo.anime.ui.screens
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.material.icons.outlined.MoreVert
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.RadioButton
+import androidx.compose.material3.TextButton
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.ui.draw.clip
@@ -63,6 +71,11 @@ fun ProfileScreen(uid: String, onBack: () -> Unit, onOpen: (Int) -> Unit, onAchi
     val friends by social.friends.collectAsStateWithLifecycle()
     val isMe = uid == social.myUid
     val isFriend = friends.any { it.uid == uid }
+    val blockedPeople by social.blocked.collectAsStateWithLifecycle()
+    val isBlocked = uid in blockedPeople
+    var menu by remember { mutableStateOf(false) }
+    var reporting by remember { mutableStateOf(false) }
+    var blocking by remember { mutableStateOf(false) }
     var requested by remember { mutableStateOf(false) }
     var tab by rememberSaveable { mutableIntStateOf(0) }
     val scope = rememberCoroutineScope()
@@ -75,8 +88,32 @@ fun ProfileScreen(uid: String, onBack: () -> Unit, onOpen: (Int) -> Unit, onAchi
     val bothWatching = entries.filter { it.status == WatchStatus.WATCHING && myById[it.animeId]?.status == WatchStatus.WATCHING }
 
     Column(Modifier.fillMaxSize().statusBarsPadding()) {
-        Row(Modifier.padding(4.dp)) {
+        Row(Modifier.fillMaxWidth().padding(4.dp)) {
             IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Outlined.ArrowBack, "Back") }
+            Spacer(Modifier.weight(1f))
+            val p = profile
+            if (!isMe && p != null && social.myUid != null) {
+                Box {
+                    IconButton(onClick = { menu = true }) { Icon(Icons.Outlined.MoreVert, "More") }
+                    DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
+                        DropdownMenuItem(text = { Text("Report") }, onClick = { menu = false; reporting = true })
+                        DropdownMenuItem(
+                            text = { Text(if (isBlocked) "Unblock" else "Block") },
+                            onClick = {
+                                menu = false
+                                if (isBlocked) scope.launch { runCatching { social.unblock(uid) } } else blocking = true
+                            },
+                        )
+                    }
+                }
+            }
+        }
+        if (isBlocked) {
+            Text(
+                "You've blocked this person. They can't see your list or send you anything.",
+                style = MaterialTheme.typography.bodySmall, color = TextDim,
+                modifier = Modifier.padding(horizontal = 20.dp).padding(bottom = 8.dp),
+            )
         }
         LazyVerticalGrid(
             columns = GridCells.Adaptive(104.dp),
@@ -107,7 +144,7 @@ fun ProfileScreen(uid: String, onBack: () -> Unit, onOpen: (Int) -> Unit, onAchi
                     )
                     Spacer(Modifier.height(14.dp))
                     val p = profile
-                    if (!isMe && !isFriend && p != null && social.myUid != null) {
+                    if (!isMe && !isFriend && !isBlocked && p != null && social.myUid != null) {
                         if (requested) {
                             OutlinedButton(onClick = {}, enabled = false, shape = RoundedCornerShape(12.dp)) { Text("Request sent") }
                         } else {
@@ -160,6 +197,97 @@ fun ProfileScreen(uid: String, onBack: () -> Unit, onOpen: (Int) -> Unit, onAchi
             entryTabs(entries, tab, { tab = it }, onOpen, emptyTitle = { "Nothing here yet" }, emptyBody = "When they add shows, they'll appear here.")
         }
     }
+
+    val target = profile
+    if (reporting && target != null) {
+        ReportDialog(
+            target,
+            onDismiss = { reporting = false },
+            onSent = {
+                reporting = false
+                scope.launch { snackbar.showSnackbar("Report sent. Thank you.") }
+            },
+        )
+    }
+    if (blocking && target != null) {
+        AlertDialog(
+            onDismissRequest = { blocking = false },
+            title = { Text("Block @${target.username}?") },
+            text = {
+                Text("They come off your friends list, can't see your list, and nothing they send will reach you. They aren't told. You can unblock them from your Profile tab.")
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        blocking = false
+                        scope.launch {
+                            runCatching { social.block(target) }
+                                .onSuccess { snackbar.showSnackbar("Blocked @${target.username}.") }
+                                .onFailure { snackbar.showSnackbar("Couldn't block them. Check your connection and try again.") }
+                        }
+                    },
+                ) { Text("Block") }
+            },
+            dismissButton = { TextButton(onClick = { blocking = false }) { Text("Cancel") } },
+        )
+    }
+}
+
+private val REPORT_REASONS = listOf("Inappropriate picture", "Offensive username", "Harassment or spam", "Something else")
+
+/** Sends a report about someone to the people who run Kumo, and offers to block them as well. */
+@Composable
+private fun ReportDialog(target: Profile, onDismiss: () -> Unit, onSent: () -> Unit) {
+    var reason by remember { mutableStateOf(REPORT_REASONS.first()) }
+    var note by remember { mutableStateOf("") }
+    var busy by remember { mutableStateOf(false) }
+    var error by remember { mutableStateOf<String?>(null) }
+    val scope = rememberCoroutineScope()
+    AlertDialog(
+        onDismissRequest = { if (!busy) onDismiss() },
+        title = { Text("Report @${target.username}") },
+        text = {
+            Column {
+                REPORT_REASONS.forEach { r ->
+                    Row(
+                        Modifier.fillMaxWidth().clip(RoundedCornerShape(8.dp)).clickable { reason = r },
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        RadioButton(selected = reason == r, onClick = { reason = r })
+                        Text(r, style = MaterialTheme.typography.bodyMedium)
+                    }
+                }
+                Spacer(Modifier.height(8.dp))
+                OutlinedTextField(
+                    value = note,
+                    onValueChange = { note = it.take(500) },
+                    label = { Text("Anything to add? (optional)") },
+                    maxLines = 3,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                Text(
+                    error ?: "Reports are reviewed by the people who run Kumo. The person isn't told who reported them.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = if (error != null) MaterialTheme.colorScheme.error else TextDim,
+                    modifier = Modifier.padding(top = 8.dp),
+                )
+            }
+        },
+        confirmButton = {
+            TextButton(
+                onClick = {
+                    if (busy) return@TextButton
+                    busy = true
+                    scope.launch {
+                        runCatching { Graph.social.report(target, reason, note) }
+                            .onSuccess { onSent() }
+                            .onFailure { error = "Couldn't send the report. Check your connection and try again."; busy = false }
+                    }
+                },
+            ) { Text("Send report") }
+        },
+        dismissButton = { TextButton(onClick = { if (!busy) onDismiss() }) { Text("Cancel") } },
+    )
 }
 
 @Composable

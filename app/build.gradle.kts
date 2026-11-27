@@ -1,3 +1,5 @@
+import java.util.Properties
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
@@ -10,17 +12,51 @@ plugins {
 val hasFirebase = file("google-services.json").exists()
 if (hasFirebase) apply(plugin = "com.google.gms.google-services")
 
+// The Play Store upload key lives outside git. keystore.properties (also outside git) says where:
+// storeFile, storePassword, keyAlias, keyPassword. Without it the Play build falls back to the
+// debug key, which is fine for trying it on a phone but can't be uploaded to Google Play.
+val keystoreProps = Properties().apply {
+    rootProject.file("keystore.properties").takeIf { it.exists() }?.inputStream()?.use { load(it) }
+}
+val hasUploadKey = keystoreProps.getProperty("storeFile") != null
+
 android {
     namespace = "com.kumo.anime"
-    compileSdk = 35
+    compileSdk = 36
 
     defaultConfig {
         applicationId = "com.kumo.anime"
         minSdk = 26
-        targetSdk = 35
-        versionCode = 8
-        versionName = "1.7"
+        targetSdk = 36
+        versionCode = 9
+        versionName = "1.8"
         buildConfigField("boolean", "HAS_FIREBASE", hasFirebase.toString())
+    }
+
+    signingConfigs {
+        if (hasUploadKey) {
+            create("upload") {
+                storeFile = rootProject.file(keystoreProps.getProperty("storeFile"))
+                storePassword = keystoreProps.getProperty("storePassword")
+                keyAlias = keystoreProps.getProperty("keyAlias")
+                keyPassword = keystoreProps.getProperty("keyPassword")
+            }
+        }
+    }
+
+    // Two versions of the same app. "github" is the one shared by link, which updates itself from
+    // GitHub releases. "play" is for Google Play, which delivers updates itself and forbids an app
+    // from installing its own, so the updater and its permission are left out of it.
+    flavorDimensions += "store"
+    productFlavors {
+        create("github") {
+            dimension = "store"
+            buildConfigField("boolean", "SELF_UPDATE", "true")
+        }
+        create("play") {
+            dimension = "store"
+            buildConfigField("boolean", "SELF_UPDATE", "false")
+        }
     }
 
     buildTypes {
@@ -29,10 +65,13 @@ android {
             isMinifyEnabled = true
             isShrinkResources = true
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
-            // Signed with the debug key so the APK can be sideloaded to friends without a keystore.
-            signingConfig = signingConfigs.getByName("debug")
         }
     }
+    // The GitHub version stays on the debug key: everyone who installed it by link has that
+    // signature, and Android only installs an update signed the same way.
+    productFlavors.getByName("github").signingConfig = signingConfigs.getByName("debug")
+    productFlavors.getByName("play").signingConfig =
+        if (hasUploadKey) signingConfigs.getByName("upload") else signingConfigs.getByName("debug")
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17

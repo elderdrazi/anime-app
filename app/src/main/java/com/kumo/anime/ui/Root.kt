@@ -361,7 +361,8 @@ private fun UsernameScreen() {
             if (busy) CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp, color = MaterialTheme.colorScheme.onPrimary)
             else Text("Continue")
         }
-        Spacer(Modifier.height(8.dp))
+        LegalLinks(Modifier.align(Alignment.CenterHorizontally).padding(top = 6.dp), lead = "By continuing you agree to the")
+        Spacer(Modifier.height(4.dp))
         TextButton(onClick = { signingIn = true }, modifier = Modifier.align(Alignment.CenterHorizontally)) {
             Text("I already have an account")
         }

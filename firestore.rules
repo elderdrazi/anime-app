@@ -3,20 +3,27 @@ service cloud.firestore {
   match /databases/{database}/documents {
     function signedIn() { return request.auth != null; }
     function me() { return request.auth.uid; }
+    // True when the person whose data this is has blocked whoever is asking.
+    function blockedBy(owner) {
+      return exists(/databases/$(database)/documents/users/$(owner)/blocked/$(request.auth.uid));
+    }
 
-    // Usernames are unique: each name doc can be claimed once, by its owner.
+    // Usernames are unique: each name doc can be claimed once, by its owner, and freed when
+    // they delete their account.
     match /usernames/{name} {
       allow read: if signedIn();
       allow create: if signedIn() && request.resource.data.uid == me();
+      allow delete: if signedIn() && resource.data.uid == me();
     }
 
     match /users/{uid} {
-      // Profiles and lists are visible to anyone signed in, which is the point of sharing.
+      // Profiles are visible to anyone signed in, which is the point of sharing.
       allow read: if signedIn();
-      allow create, update: if me() == uid;
+      allow create, update, delete: if me() == uid;
 
+      // Lists are visible to anyone signed in, except people their owner has blocked.
       match /entries/{animeId} {
-        allow read: if signedIn();
+        allow read: if signedIn() && (me() == uid || !blockedBy(uid));
         allow write: if me() == uid;
       }
 
@@ -26,23 +33,31 @@ service cloud.firestore {
         // Accepting a request adds you to the requester's list too, but only if they asked.
         allow create: if me() == fid
           && exists(/databases/$(database)/documents/friendRequests/$(uid + '_' + fid));
+        // Anyone can take themselves off someone else's list: by unfriending, blocking or leaving.
+        allow delete: if me() == fid;
       }
 
+      // Nothing from a blocked person reaches the inbox.
       match /notifications/{nid} {
         allow read, update, delete: if me() == uid;
-        allow create: if signedIn() && request.resource.data.fromUid == me();
+        allow create: if signedIn() && request.resource.data.fromUid == me() && !blockedBy(uid);
+      }
+
+      // Who this person has blocked. Private to them.
+      match /blocked/{bid} {
+        allow read, write: if me() == uid;
       }
     }
 
     match /friendRequests/{rid} {
-      allow read: if signedIn() && (resource.data.from == me() || resource.data.to == me());
+      allow read, delete: if signedIn() && (resource.data.from == me() || resource.data.to == me());
       allow create, update: if signedIn()
         && request.resource.data.from == me()
         && rid == me() + '_' + request.resource.data.to;
     }
 
     match /suggestions/{sid} {
-      allow read: if signedIn() && me() in resource.data.participants;
+      allow read, delete: if signedIn() && me() in resource.data.participants;
       allow create: if signedIn()
         && request.resource.data.fromUid == me()
         && me() in request.resource.data.participants;
@@ -50,6 +65,12 @@ service cloud.firestore {
       allow update: if signedIn()
         && resource.data.toUid == me()
         && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status']);
+    }
+
+    // Reports about other people. Anyone signed in can file one in their own name; nobody can
+    // read them from the app. They're reviewed in the Firebase console.
+    match /reports/{rid} {
+      allow create: if signedIn() && request.resource.data.from == me();
     }
   }
 }

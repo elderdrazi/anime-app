@@ -79,6 +79,7 @@ import com.kumo.anime.data.WatchStatus
 import com.kumo.anime.data.topRated
 import com.kumo.anime.ui.AnimeCard
 import com.kumo.anime.ui.Avatar
+import com.kumo.anime.ui.LegalLinks
 import com.kumo.anime.ui.Card
 import com.kumo.anime.ui.LocalSnackbar
 import com.kumo.anime.ui.ScreenTitle
@@ -115,6 +116,9 @@ fun AccountScreen(onOpen: (Int) -> Unit, onOpenUser: (String) -> Unit, onAchieve
     val standing by Progression.standing.collectAsStateWithLifecycle()
     val record by social.record.collectAsStateWithLifecycle()
     var choosingBorder by remember { mutableStateOf(false) }
+    val blocked by social.blocked.collectAsStateWithLifecycle()
+    var showBlocked by remember { mutableStateOf(false) }
+    var deleting by remember { mutableStateOf(false) }
     var photoMenu by remember { mutableStateOf(false) }
     var cropping by remember { mutableStateOf<Uri?>(null) }
     // Android's own photo picker: it hands over just the one picture chosen, so no storage permission is needed.
@@ -253,27 +257,68 @@ fun AccountScreen(onOpen: (Int) -> Unit, onOpenUser: (String) -> Unit, onAchieve
                     Text("Sign out")
                 }
             }
-            val update by Updater.state.collectAsStateWithLifecycle()
-            TextButton(
-                onClick = {
-                    scope.launch {
-                        Updater.check(loud = true)
-                        when (val now = Updater.state.value) {
-                            UpdateState.Current -> snackbar.showSnackbar("You're on the latest version.")
-                            is UpdateState.Failed -> snackbar.showSnackbar(now.message)
-                            else -> {}
+            if (blocked.isNotEmpty()) {
+                TextButton(onClick = { showBlocked = true }, modifier = Modifier.align(Alignment.CenterHorizontally)) {
+                    Text("Blocked people  ·  ${blocked.size}")
+                }
+            }
+            TextButton(onClick = { deleting = true }, modifier = Modifier.align(Alignment.CenterHorizontally)) {
+                Text("Delete account", color = MaterialTheme.colorScheme.error)
+            }
+            LegalLinks(Modifier.align(Alignment.CenterHorizontally))
+            if (BuildConfig.SELF_UPDATE) {
+                val update by Updater.state.collectAsStateWithLifecycle()
+                TextButton(
+                    onClick = {
+                        scope.launch {
+                            Updater.check(loud = true)
+                            when (val now = Updater.state.value) {
+                                UpdateState.Current -> snackbar.showSnackbar("You're on the latest version.")
+                                is UpdateState.Failed -> snackbar.showSnackbar(now.message)
+                                else -> {}
+                            }
                         }
-                    }
-                },
-                enabled = update !is UpdateState.Checking && update !is UpdateState.Downloading,
-                modifier = Modifier.align(Alignment.CenterHorizontally),
-            ) {
+                    },
+                    enabled = update !is UpdateState.Checking && update !is UpdateState.Downloading,
+                    modifier = Modifier.align(Alignment.CenterHorizontally),
+                ) {
+                    Text(
+                        if (update is UpdateState.Checking) "Checking for updates…" else "Kumo ${BuildConfig.VERSION_NAME} · Check for updates",
+                        style = MaterialTheme.typography.labelMedium,
+                    )
+                }
+            } else {
+                // The Play Store version is updated by Google Play, so there's nothing to check here.
                 Text(
-                    if (update is UpdateState.Checking) "Checking for updates…" else "Kumo ${BuildConfig.VERSION_NAME} · Check for updates",
-                    style = MaterialTheme.typography.labelMedium,
+                    "Kumo ${BuildConfig.VERSION_NAME}", style = MaterialTheme.typography.labelMedium, color = TextDim,
+                    modifier = Modifier.align(Alignment.CenterHorizontally).padding(vertical = 8.dp),
                 )
             }
         }
+    }
+
+    if (deleting) DeleteAccountDialog(email) { deleting = false }
+    if (showBlocked) {
+        AlertDialog(
+            onDismissRequest = { showBlocked = false },
+            title = { Text("Blocked people") },
+            text = {
+                Column {
+                    Text(
+                        "They can't see your list or send you anything. Unblocking doesn't add them back as a friend.",
+                        style = MaterialTheme.typography.bodyMedium, color = TextDim,
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    blocked.entries.sortedBy { it.value.lowercase() }.forEach { (uid, name) ->
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text("@${name.ifEmpty { "someone" }}", Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis)
+                            TextButton(onClick = { scope.launch { runCatching { social.unblock(uid) } } }) { Text("Unblock") }
+                        }
+                    }
+                }
+            },
+            confirmButton = { TextButton(onClick = { showBlocked = false }) { Text("Done") } },
+        )
     }
 
     if (choosingBorder) {
@@ -317,6 +362,68 @@ fun AccountScreen(onOpen: (Int) -> Unit, onOpenUser: (String) -> Unit, onAchieve
             dismissButton = { TextButton(onClick = { confirmSignOut = false }) { Text("Cancel") } },
         )
     }
+}
+
+/**
+ * Confirms deleting the account for good. With an email attached the password is asked for again,
+ * so nothing is removed unless it's really the owner.
+ */
+@Composable
+private fun DeleteAccountDialog(email: String?, onDismiss: () -> Unit) {
+    var password by remember { mutableStateOf("") }
+    var error by remember { mutableStateOf<String?>(null) }
+    var busy by remember { mutableStateOf(false) }
+    val scope = rememberCoroutineScope()
+    AlertDialog(
+        onDismissRequest = { if (!busy) onDismiss() },
+        title = { Text("Delete your account?") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Text(
+                    "This removes your list, ratings, achievements, picture, friends and inbox, and frees your username. It can't be undone.",
+                    style = MaterialTheme.typography.bodyMedium, color = TextBody,
+                )
+                if (email != null) {
+                    OutlinedTextField(
+                        value = password,
+                        onValueChange = { password = it; error = null },
+                        label = { Text("Password for $email") },
+                        singleLine = true,
+                        visualTransformation = PasswordVisualTransformation(),
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password, imeAction = ImeAction.Done),
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                }
+                error?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error) }
+            }
+        },
+        confirmButton = {
+            TextButton(
+                onClick = {
+                    if (busy) return@TextButton
+                    if (email != null && password.isEmpty()) {
+                        error = "Type your password to confirm."
+                        return@TextButton
+                    }
+                    busy = true
+                    error = null
+                    scope.launch {
+                        try {
+                            // On success the app returns to the welcome screen, taking this dialog with it.
+                            Graph.social.deleteAccount(password.takeIf { email != null })
+                        } catch (e: Exception) {
+                            error = e.message ?: "That didn't work. Try again."
+                            busy = false
+                        }
+                    }
+                },
+            ) {
+                if (busy) CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp)
+                else Text("Delete forever", color = MaterialTheme.colorScheme.error)
+            }
+        },
+        dismissButton = { TextButton(onClick = { if (!busy) onDismiss() }) { Text("Cancel") } },
+    )
 }
 
 /** Appears only when a newer version is out. One tap downloads it and opens Android's install prompt. */

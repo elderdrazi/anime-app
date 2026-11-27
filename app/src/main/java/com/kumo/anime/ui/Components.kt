@@ -49,6 +49,7 @@ import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextAlign
@@ -71,6 +72,31 @@ import com.kumo.anime.ui.theme.personColor
 import androidx.compose.material3.SnackbarHostState
 
 val LocalSnackbar = compositionLocalOf { SnackbarHostState() }
+
+/** Where the pages people can read before and after signing up live. */
+object Links {
+    private const val DOCS = "https://github.com/elderdrazi/anime-app/blob/main/docs"
+    const val TERMS = "$DOCS/terms.md"
+    const val PRIVACY = "$DOCS/privacy.md"
+}
+
+/** "Terms · Privacy policy" as two tappable links, each opening in the browser. */
+@Composable
+fun LegalLinks(modifier: Modifier = Modifier, lead: String? = null) {
+    val open = LocalUriHandler.current
+    Row(modifier, verticalAlignment = Alignment.CenterVertically) {
+        if (lead != null) Text(lead, style = MaterialTheme.typography.bodySmall, color = TextDim)
+        Text(
+            "Terms", style = MaterialTheme.typography.bodySmall, color = Accent,
+            modifier = Modifier.clickable { open.openUri(Links.TERMS) }.padding(horizontal = 4.dp, vertical = 6.dp),
+        )
+        Text(if (lead != null) "and" else "·", style = MaterialTheme.typography.bodySmall, color = TextDim)
+        Text(
+            "Privacy policy", style = MaterialTheme.typography.bodySmall, color = Accent,
+            modifier = Modifier.clickable { open.openUri(Links.PRIVACY) }.padding(horizontal = 4.dp, vertical = 6.dp),
+        )
+    }
+}
 
 fun parseHex(hex: String?): Color? = runCatching {
     if (hex == null) null else Color(android.graphics.Color.parseColor(hex))

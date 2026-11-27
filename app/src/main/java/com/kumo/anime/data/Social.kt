@@ -8,6 +8,9 @@ import androidx.compose.ui.graphics.asImageBitmap
 import com.google.firebase.firestore.Blob
 import com.google.firebase.firestore.FieldValue
 import com.google.firebase.firestore.Source
+import com.google.firebase.firestore.DocumentReference
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.map
 import java.util.Calendar
 import kotlin.math.roundToInt
 import kotlinx.coroutines.Job
@@ -260,11 +263,21 @@ class Social(private val app: Context) {
             d.getString("username")?.let { Friend(d.id, it) }
         }
     }
-    val notices: StateFlow<List<Notice>> = whenReady(emptyList()) { me ->
+    /** People you've blocked, by account id, with the username they had when you blocked them. */
+    val blocked: StateFlow<Map<String, String>> = whenReady(emptyMap()) { me ->
+        userDoc(me.uid).collection("blocked").listen { d -> d.id to (d.getString("username") ?: "") }.map { it.toMap() }
+    }
+
+    private val allNotices: StateFlow<List<Notice>> = whenReady(emptyList()) { me ->
         db.collection("users").document(me.uid).collection("notifications")
             .orderBy("createdAt", Query.Direction.DESCENDING).limit(60)
             .listen(::toNotice)
     }
+
+    /** Your inbox, without anything from people you've blocked. */
+    val notices: StateFlow<List<Notice>> =
+        combine(allNotices, blocked) { list, hidden -> list.filter { it.fromUid !in hidden } }
+            .stateIn(scope, SharingStarted.Eagerly, emptyList())
     val suggestions: StateFlow<List<Suggestion>> = whenReady(emptyList()) { me ->
         db.collection("suggestions").whereArrayContains("participants", me.uid).listen(::toSuggestion)
     }
@@ -365,6 +378,94 @@ class Social(private val app: Context) {
         auth.signOut()
         _email.value = null
         start()
+    }
+
+    /**
+     * Deletes your account for good: your list, ratings, picture, friends, inbox, username and
+     * sign-in. [password] is asked for when an email is attached, to confirm it's really you
+     * before anything is removed.
+     */
+    suspend fun deleteAccount(password: String?) {
+        val user = auth.currentUser ?: throw AccountException("You're not signed in.")
+        val uid = user.uid
+        val name = me?.username
+        val mail = user.email?.takeIf { it.isNotBlank() }
+        if (mail != null) {
+            try {
+                user.reauthenticate(EmailAuthProvider.getCredential(mail, password.orEmpty())).await()
+            } catch (e: Exception) {
+                throw AccountException(accountMessage(e))
+            }
+        }
+        try {
+            withTimeout(90_000) {
+                val doc = userDoc(uid)
+                val refs = ArrayList<DocumentReference>()
+                // Each friendship is saved on both people's lists, so both sides go.
+                doc.collection("friends").get().await().documents.forEach {
+                    refs += userDoc(it.id).collection("friends").document(uid)
+                    refs += it.reference
+                }
+                for (sub in listOf("entries", "notifications", "blocked")) {
+                    refs += doc.collection(sub).get().await().documents.map { it.reference }
+                }
+                val requests = db.collection("friendRequests")
+                refs += requests.whereEqualTo("from", uid).get().await().documents.map { it.reference }
+                refs += requests.whereEqualTo("to", uid).get().await().documents.map { it.reference }
+                refs += db.collection("suggestions").whereArrayContains("participants", uid).get().await().documents.map { it.reference }
+                refs.distinctBy { it.path }.chunked(400).forEach { chunk ->
+                    val batch = db.batch()
+                    chunk.forEach(batch::delete)
+                    batch.commit().await()
+                }
+                // The profile and the claim on the username go last, so a failure above can be retried.
+                val last = db.batch()
+                if (name != null) last.delete(db.collection("usernames").document(name.lowercase()))
+                last.delete(doc)
+                last.commit().await()
+            }
+            user.delete().await()
+        } catch (e: Exception) {
+            if (e is CancellationException && e !is TimeoutCancellationException) throw e
+            Log.w(TAG, "delete failed", e)
+            throw AccountException("Couldn't finish deleting your account. Check your connection and try again.")
+        }
+        AniListSync.disconnect()
+        faces.remove(uid)
+        _email.value = null
+        start()
+    }
+
+    // ---- blocking and reporting ----
+
+    /**
+     * Blocks someone: they come off your friends list (and you off theirs), nothing they send
+     * reaches you, and they can no longer open your list.
+     */
+    suspend fun block(target: Profile) {
+        val uid = myUid ?: return
+        if (target.uid == uid) return
+        val batch = db.batch()
+        batch.set(userDoc(uid).collection("blocked").document(target.uid), mapOf("username" to target.username, "at" to now()))
+        batch.delete(userDoc(uid).collection("friends").document(target.uid))
+        batch.delete(userDoc(target.uid).collection("friends").document(uid))
+        batch.commit().await()
+    }
+
+    suspend fun unblock(uid: String) {
+        val me = myUid ?: return
+        userDoc(me).collection("blocked").document(uid).delete().await()
+    }
+
+    /** Reports someone to the people who run Kumo. [reason] is one of a short list; [note] is optional detail. */
+    suspend fun report(target: Profile, reason: String, note: String?) {
+        val uid = myUid ?: return
+        db.collection("reports").document().set(
+            mapOf(
+                "from" to uid, "about" to target.uid, "aboutName" to target.username,
+                "reason" to reason, "note" to note?.trim()?.take(500)?.takeIf { it.isNotEmpty() }, "createdAt" to now(),
+            ),
+        ).await()
     }
 
     private fun accountMessage(e: Exception): String = when {
