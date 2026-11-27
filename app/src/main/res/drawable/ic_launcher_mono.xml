@@ -1,18 +1,15 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- One-colour version for Android's themed icons: the cloud, a crescent of moon behind it, and a sparkle. -->
+<!-- One-colour version for Android's themed icons: the two halves of the sliced moon and the glint. -->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
     android:width="108dp"
     android:height="108dp"
     android:viewportWidth="108"
     android:viewportHeight="108">
-    <path
-        android:fillColor="#FFFFFFFF"
-        android:pathData="M36,72 a9,9 0 0,1 0.5,-18 a12.5,12.5 0 0,1 23,-5.5 a10,10 0 0,1 12,11 a6.5,6.5 0 0,1 0,12.5 z" />
-    <path
-        android:fillColor="#FFFFFFFF"
-        android:fillAlpha="0.55"
-        android:pathData="M64,40 m-15,0 a15,15 0 1,0 30,0 a15,15 0 1,0 -30,0" />
-    <path
-        android:fillColor="#FFFFFFFF"
-        android:pathData="M34,29 Q34,35 40,35 Q34,35 34,41 Q34,35 28,35 Q34,35 34,29 Z" />
+    <group android:translateX="-3.06" android:translateY="2.57">
+        <path android:fillColor="#FFFFFFFF" android:pathData="M70.747,36.812 A24,24 0 0,0 34.167,67.512 Z" />
+    </group>
+    <group android:translateX="3.06" android:translateY="-2.57">
+        <path android:fillColor="#FFFFFFFF" android:pathData="M37.253,71.188 A24,24 0 0,0 73.833,40.488 Z" />
+    </group>
+    <path android:fillColor="#FFFFFFFF" android:pathData="M77.5,29 Q77.5,34.3 82.8,34.3 Q77.5,34.3 77.5,39.6 Q77.5,34.3 72.2,34.3 Q77.5,34.3 77.5,29 Z" />
 </vector>

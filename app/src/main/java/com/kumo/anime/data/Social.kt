@@ -9,6 +9,9 @@ import com.google.firebase.firestore.Blob
 import com.google.firebase.firestore.FieldValue
 import com.google.firebase.firestore.Source
 import java.util.Calendar
+import kotlin.math.roundToInt
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.TimeoutCancellationException
@@ -108,6 +111,52 @@ fun topRated(entries: List<Entry>, count: Int = 10): List<Entry> =
         .take(count)
 
 data class Friend(val uid: String, val username: String)
+
+/** What your friends make of one show: the average of their ratings, and who rated it, keenest first. */
+data class FriendPick(
+    val animeId: Int,
+    val title: String,
+    val cover: String?,
+    val average: Int,
+    val count: Int,
+    val names: List<String>,
+)
+
+/** Gathers friends' rated entries into one [FriendPick] per show. */
+fun friendPicks(rated: List<Pair<Friend, Entry>>): Map<Int, FriendPick> =
+    rated.filter { it.second.rating != null }.groupBy { it.second.animeId }.mapValues { (id, all) ->
+        val each = all.distinctBy { it.first.uid }.sortedByDescending { it.second.rating }
+        val shown = each.first().second
+        FriendPick(
+            id, shown.title, shown.cover,
+            average = (each.sumOf { it.second.rating ?: 0 } / each.size.toDouble()).roundToInt(),
+            count = each.size,
+            names = each.map { it.first.username },
+        )
+    }
+
+/** A show counts as a friends' favourite once their ratings average this or more. */
+const val FAVORITE_FROM = 70
+
+/**
+ * Friends' favourites, ordered for you: shows you haven't watched come first, then ones you're
+ * watching, then ones you've finished. Within each, the best loved lead, and a show several
+ * friends agree on edges out one a single friend rated the same.
+ */
+fun friendFavorites(picks: Collection<FriendPick>, mine: List<Entry>): List<FriendPick> {
+    val status = mine.associate { it.animeId to it.status }
+    fun seen(p: FriendPick) = when (status[p.animeId]) {
+        WatchStatus.WATCHED -> 2
+        WatchStatus.WATCHING -> 1
+        else -> 0
+    }
+    return picks.filter { it.average >= FAVORITE_FROM }.sortedWith(
+        compareBy<FriendPick> { seen(it) }
+            .thenByDescending { it.average + 4 * (it.count - 1) }
+            .thenByDescending { it.count }
+            .thenBy { it.title },
+    )
+}
 
 /** A friend's entry for one anime, for comparison on the detail page. */
 data class FriendEntry(val friend: Friend, val entry: Entry)
@@ -220,12 +269,36 @@ class Social(private val app: Context) {
         db.collection("suggestions").whereArrayContains("participants", me.uid).listen(::toSuggestion)
     }
 
+    private val _friendRatings = MutableStateFlow<Map<Int, FriendPick>>(emptyMap())
+    /** Every show at least one friend has rated, by show id. Read when the app opens and on request. */
+    val friendRatings: StateFlow<Map<Int, FriendPick>> = _friendRatings.asStateFlow()
+    private var ratingsJob: Job? = null
+
+    /** Reads friends' ratings again, for a pull-to-refresh style update. */
+    fun refreshFriendRatings() {
+        if (!enabled) return
+        ratingsJob?.cancel()
+        ratingsJob = scope.launch { loadFriendRatings(friends.value) }
+    }
+
+    private suspend fun loadFriendRatings(list: List<Friend>) = coroutineScope {
+        // One small query per friend: only the entries they've rated.
+        val rated = list.take(40).map { f ->
+            async {
+                runCatching { entryDocs(f.uid).whereGreaterThan("rating", 0).get().await() }
+                    .getOrNull()?.documents?.mapNotNull(::toEntry)?.map { f to it }.orEmpty()
+            }
+        }.awaitAll().flatten()
+        _friendRatings.value = friendPicks(rated)
+    }
+
     private var upgrading = false
 
     fun start() {
         if (!enabled) return
         if (!upgrading) {
             upgrading = true
+            scope.launch { friends.collectLatest { loadFriendRatings(it) } }
             // Entries saved per season by version 1.0 are folded into whole-show entries.
             scope.launch {
                 myEntries.collect { list ->
@@ -796,7 +869,8 @@ class Social(private val app: Context) {
                 updatedAt = d.getLong("updatedAt") ?: 0,
                 label = d.getString("label"),
                 whole = (d.getLong("v") ?: 1) >= 2,
-                rating = d.getLong("rating")?.toInt(),
+                // Read leniently: a rating saved as anything but a number is treated as no rating.
+                rating = (d.get("rating") as? Number)?.toInt(),
                 seen = (d.get("seen") as? Map<*, *>)?.mapNotNull { (k, v) ->
                     val id = (k as? String)?.toIntOrNull() ?: return@mapNotNull null
                     id to ((v as? Number)?.toInt() ?: return@mapNotNull null)

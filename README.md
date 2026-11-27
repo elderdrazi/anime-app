@@ -13,6 +13,7 @@ An Android app for sharing what anime you've watched, what you want to watch, an
 - **Profile pictures:** tap your picture on the Profile tab to choose a photo, then move and zoom it inside the circle. It shows wherever friends see you. The picture is saved as a small image in your own profile record, so no file storage service is needed.
 - **Levels and achievements:** watching episodes, finishing shows and rating them earn XP towards your level. There are 100 achievements across episodes, genres, variety, friends, habits and more, each bronze to platinum. Friends see your level and achievements on your profile.
 - **Cover photo:** once you've rated a show, the banner art of your five highest-rated shows becomes a cover photo on your profile, fading from one to the next. Friends see it too.
+- **Friends' ratings:** a badge on covers in Discover and a line on each show's page give your friends' average rating next to AniList's. The "Friends' favorites" filter lists what they rate 70 or higher, with shows you haven't watched first.
 - **Picture borders:** thirteen borders for your profile picture unlock as you level up and collect achievements; the rarest ones slowly turn.
 - **Your lists in Discover:** the Watching, Want to watch and Watched filters show your own list, most recently updated first.
 - **Friends:** add people by username, or share a `kumo://u/<you>` link. Their lists, progress and the shows you both want to watch appear on their profile.

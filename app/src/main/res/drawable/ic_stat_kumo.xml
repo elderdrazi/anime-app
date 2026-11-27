@@ -1,11 +1,15 @@
+<!-- The sliced moon for the status bar, where icons are a single colour. -->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
     android:width="24dp"
     android:height="24dp"
-    android:viewportWidth="60"
-    android:viewportHeight="60">
-    <group android:translateX="-26" android:translateY="-23">
-        <path
-            android:fillColor="#FFFFFFFF"
-            android:pathData="M34,66 a10,10 0 0,1 1,-20 a14,14 0 0,1 26,-6 a11,11 0 0,1 13,12 a7,7 0 0,1 0,14 z" />
+    android:viewportWidth="62"
+    android:viewportHeight="62">
+    <group android:translateX="-23" android:translateY="-23">
+        <group android:translateX="-3.06" android:translateY="2.57">
+            <path android:fillColor="#FFFFFFFF" android:pathData="M70.747,36.812 A24,24 0 0,0 34.167,67.512 Z" />
+        </group>
+        <group android:translateX="3.06" android:translateY="-2.57">
+            <path android:fillColor="#FFFFFFFF" android:pathData="M37.253,71.188 A24,24 0 0,0 73.833,40.488 Z" />
+        </group>
     </group>
 </vector>

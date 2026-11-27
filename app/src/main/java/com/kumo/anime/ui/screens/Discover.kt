@@ -37,6 +37,9 @@ import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.kumo.anime.Graph
 import com.kumo.anime.data.AniList
+import androidx.compose.ui.text.style.TextAlign
+import com.kumo.anime.data.FAVORITE_FROM
+import com.kumo.anime.data.friendFavorites
 import com.kumo.anime.data.FILTERS
 import com.kumo.anime.data.Filter
 import com.kumo.anime.data.Session
@@ -64,6 +67,8 @@ data class DiscoverState(
     val filter: Filter? = null,
     /** When set, the grid shows your own list for that status instead of AniList's catalogue. */
     val mine: WatchStatus? = null,
+    /** When on, the grid shows what your friends rate highly instead. */
+    val favorites: Boolean = false,
     val items: List<Show> = emptyList(),
     val loading: Boolean = false,
     val endReached: Boolean = false,
@@ -96,12 +101,28 @@ class DiscoverViewModel : ViewModel() {
 
     fun setFilter(f: Filter?) {
         val old = _state.value
-        _state.update { it.copy(filter = f, mine = null) }
+        _state.update { it.copy(filter = f, mine = null, favorites = false) }
         if (f != old.filter) reload()
     }
 
     /** Your own list needs no loading; it's already on the phone. */
-    fun setMine(status: WatchStatus?) = _state.update { it.copy(mine = status) }
+    fun setMine(status: WatchStatus?) = _state.update { it.copy(mine = status, favorites = false) }
+
+    fun setFavorites(on: Boolean) = _state.update { it.copy(favorites = on, mine = null) }
+
+    private var lastReselect = 0
+
+    /**
+     * The Discover tab was tapped while already showing: start again from the top with fresh
+     * results. [token] goes up by one per tap; returns false when that tap was already handled.
+     */
+    fun reselect(token: Int): Boolean {
+        if (token == lastReselect) return false
+        lastReselect = token
+        Graph.social.refreshFriendRatings()
+        reload()
+        return true
+    }
 
     fun reload() {
         loadJob?.cancel()
@@ -151,15 +172,19 @@ class DiscoverViewModel : ViewModel() {
 }
 
 @Composable
-fun DiscoverScreen(onOpen: (Int) -> Unit, vm: DiscoverViewModel = viewModel()) {
+fun DiscoverScreen(onOpen: (Int) -> Unit, reselected: Int = 0, vm: DiscoverViewModel = viewModel()) {
     val s by vm.state.collectAsStateWithLifecycle()
     val mine by Graph.social.myEntries.collectAsStateWithLifecycle()
     val statusById = remember(mine) { mine.associate { it.animeId to it.status } }
     val session by Graph.social.session.collectAsStateWithLifecycle()
     val signedIn = session is Session.Ready
+    val friends by Graph.social.friends.collectAsStateWithLifecycle()
+    val picks by Graph.social.friendRatings.collectAsStateWithLifecycle()
     val grid = rememberLazyGridState()
     val scope = rememberCoroutineScope()
     val toTop: () -> Unit = { scope.launch { grid.scrollToItem(0) } }
+    // Tapping the Discover tab while it's already showing refreshes and jumps back to the top.
+    LaunchedEffect(reselected) { if (vm.reselect(reselected)) grid.scrollToItem(0) }
 
     Column(Modifier.fillMaxSize().statusBarsPadding()) {
         ScreenTitle("Discover")
@@ -179,7 +204,7 @@ fun DiscoverScreen(onOpen: (Int) -> Unit, vm: DiscoverViewModel = viewModel()) {
         ) {
             item(span = { GridItemSpan(maxLineSpan) }) {
                 Column(Modifier.padding(top = 12.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                    if (s.query.isBlank() && s.mine == null) {
+                    if (s.query.isBlank() && s.mine == null && !s.favorites) {
                         LazyRow(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                             items(Sort.entries) { sort ->
                                 Pill(sort.label, s.sort == sort, { vm.setSort(sort); toTop() }, outlined = false)
@@ -187,14 +212,17 @@ fun DiscoverScreen(onOpen: (Int) -> Unit, vm: DiscoverViewModel = viewModel()) {
                         }
                     }
                     LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                        item { Pill("All", s.filter == null && s.mine == null, { vm.setFilter(null); toTop() }) }
-                        // Your own lists come first, then AniList's genres and themes.
+                        item { Pill("All", s.filter == null && s.mine == null && !s.favorites, { vm.setFilter(null); toTop() }) }
+                        // Your own lists and your friends' favourites come first, then AniList's genres and themes.
                         if (signedIn) {
                             items(ListTabs) { st ->
                                 Pill(st.label, s.mine == st, { vm.setMine(if (s.mine == st) null else st); toTop() })
                             }
+                            item { Pill("Friends' favorites", s.favorites, { vm.setFavorites(!s.favorites); toTop() }) }
                         }
-                        items(FILTERS) { f -> Pill(f.label, s.mine == null && s.filter == f, { vm.setFilter(f); toTop() }) }
+                        items(FILTERS) { f ->
+                            Pill(f.label, s.mine == null && !s.favorites && s.filter == f, { vm.setFilter(f); toTop() })
+                        }
                     }
                 }
             }
@@ -223,6 +251,33 @@ fun DiscoverScreen(onOpen: (Int) -> Unit, vm: DiscoverViewModel = viewModel()) {
                 }
                 return@LazyVerticalGrid
             }
+            if (s.favorites) {
+                val list = friendFavorites(picks.values, mine).filter { it.title.contains(s.query.trim(), ignoreCase = true) }
+                items(list, key = { it.animeId }) { p ->
+                    AnimeCard(
+                        title = p.title,
+                        cover = p.cover,
+                        status = statusById[p.animeId],
+                        caption = if (p.count == 1) "★ ${p.average} · @${p.names.first()}" else "★ ${p.average} avg · ${p.count} friends",
+                        onClick = { onOpen(p.animeId) },
+                    )
+                }
+                if (list.isEmpty()) {
+                    item(span = { GridItemSpan(maxLineSpan) }) {
+                        Box(Modifier.fillMaxWidth().padding(vertical = 32.dp, horizontal = 24.dp), contentAlignment = Alignment.Center) {
+                            Text(
+                                when {
+                                    s.query.isNotBlank() -> "None of your friends' favorites match that"
+                                    friends.isEmpty() -> "Add friends to see the shows they rate highly."
+                                    else -> "None of your friends have rated a show $FAVORITE_FROM or higher yet."
+                                },
+                                color = TextDim, style = MaterialTheme.typography.bodyMedium, textAlign = TextAlign.Center,
+                            )
+                        }
+                    }
+                }
+                return@LazyVerticalGrid
+            }
             // In search and in the Airing and Upcoming lists, say which season put the show there.
             val nameSeason = s.query.isNotBlank() || s.sort == Sort.AIRING || s.sort == Sort.UPCOMING
             itemsIndexed(s.items, key = { _, show -> show.anime.id }) { i, show ->
@@ -234,6 +289,8 @@ fun DiscoverScreen(onOpen: (Int) -> Unit, vm: DiscoverViewModel = viewModel()) {
                     cover = a.cover,
                     tint = a.color,
                     status = statusById[a.id],
+                    // Next to AniList's score in the caption, a badge on the cover gives your friends' average.
+                    friends = picks[a.id]?.average,
                     caption = if (nameSeason && show.via != null) partLabel(a, show.via)
                     else score?.let { "$it% · ${a.year ?: a.format ?: ""}".trimEnd(' ', '·') } ?: a.meta,
                     onClick = { onOpen(a.id) },

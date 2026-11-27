@@ -37,6 +37,11 @@ enum class Sort(
 /** A browse category: one of AniList's genres, or one of its finer-grained tags. */
 data class Filter(val label: String, val tag: Boolean = false, val api: String = label)
 
+/** The categories people reach for most. These lead the row; everything else follows in A to Z order. */
+private val COMMON_FILTERS = listOf(
+    "Action", "Shounen", "Romance", "Comedy", "Fantasy", "Isekai", "Adventure", "Drama", "Slice of Life", "Sci-Fi",
+)
+
 val FILTERS: List<Filter> = (
     listOf(
         "Action", "Adventure", "Comedy", "Drama", "Ecchi", "Fantasy", "Horror", "Mahou Shoujo", "Mecha",
@@ -51,7 +56,10 @@ val FILTERS: List<Filter> = (
         Filter("Cyberpunk", true), Filter("Idol", true), Filter("Iyashikei", true), Filter("Parody", true),
         Filter("Zombie", true), Filter("Kids", true),
     )
-    ).sortedBy { it.label }
+    ).sortedWith(
+        compareBy<Filter> { f -> COMMON_FILTERS.indexOf(f.label).let { if (it < 0) COMMON_FILTERS.size else it } }
+            .thenBy { it.label },
+    )
 
 const val NO_DATE = 99999999
 

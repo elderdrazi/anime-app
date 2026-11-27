@@ -134,7 +134,7 @@ fun AccountScreen(onOpen: (Int) -> Unit, onOpenUser: (String) -> Unit, onAchieve
         ) {
             UpdateCard()
             // With at least one show rated, the art of your favourites becomes a cover photo behind your name.
-            val top = remember(mine) { topRated(mine) }
+            val top = remember(mine) { topRated(mine, Int.MAX_VALUE) }
             Box(Modifier.fillMaxWidth()) {
             if (top.isNotEmpty()) CoverPhoto(top, Modifier.fillMaxWidth().height(176.dp).clip(RoundedCornerShape(20.dp)))
             Row(
@@ -200,16 +200,17 @@ fun AccountScreen(onOpen: (Int) -> Unit, onOpenUser: (String) -> Unit, onAchieve
             if (top.isEmpty()) {
                 Card {
                     Column {
-                        Text("Your top ten", style = MaterialTheme.typography.titleSmall)
+                        Text("Your ratings", style = MaterialTheme.typography.titleSmall)
                         Spacer(Modifier.height(4.dp))
                         Text(
-                            "Rate shows you're watching or have watched, and your ten highest will appear here and on your profile.",
+                            "Rate shows you're watching or have watched, and they'll be ranked here and on your profile, best first.",
                             style = MaterialTheme.typography.bodySmall, color = TextDim,
                         )
                     }
                 }
             } else {
-                TopTen(top, onOpen, "Your top ${if (top.size == 10) "ten" else top.size.toString()}")
+                // Every show you've rated, best first; the first ten are your top ten.
+                TopTen(top, onOpen, "Your ratings  ·  ${top.size}")
             }
 
             Card(padding = PaddingValues(vertical = 4.dp)) {
@@ -536,7 +537,7 @@ private fun Detail(label: String, value: String, accent: Boolean = false, onClic
     }
 }
 
-/** A person's highest-rated shows, ranked. Shown on your own profile and on the one friends see. */
+/** Every show a person has rated, ranked best first, in a row that scrolls sideways. On both kinds of profile. */
 @Composable
 fun TopTen(top: List<Entry>, onOpen: (Int) -> Unit, title: String) {
     Column(Modifier.fillMaxWidth()) {

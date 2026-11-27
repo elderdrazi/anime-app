@@ -33,6 +33,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Bookmark
 import androidx.compose.material.icons.outlined.Check
 import androidx.compose.material.icons.outlined.Close
+import androidx.compose.material.icons.outlined.People
 import androidx.compose.material.icons.outlined.PlayArrow
 import androidx.compose.material.icons.outlined.Search
 import androidx.compose.material3.Icon
@@ -98,11 +99,24 @@ fun AnimeCard(
     caption: String? = null,
     tint: String? = null,
     progress: Float? = null,
+    /** Your friends' average rating for the show, shown as a small badge on the cover. */
+    friends: Int? = null,
 ) {
     Column(modifier.clickable(onClick = onClick)) {
         Box {
             Cover(cover, Modifier.fillMaxWidth().aspectRatio(2f / 3f), tint)
             if (status != null) StatusBadge(status, Modifier.align(Alignment.TopEnd).padding(6.dp))
+            if (friends != null) {
+                Row(
+                    Modifier.align(Alignment.BottomStart).padding(6.dp).clip(RoundedCornerShape(50))
+                        .background(Color.Black.copy(alpha = 0.66f)).padding(horizontal = 7.dp, vertical = 3.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Icon(Icons.Outlined.People, "Friends' average rating", Modifier.size(12.dp), tint = Accent)
+                    Spacer(Modifier.width(4.dp))
+                    Text("$friends", style = MaterialTheme.typography.labelSmall, color = TextHi)
+                }
+            }
             if (progress != null) {
                 ProgressBar(
                     progress,

@@ -71,7 +71,7 @@ fun ProfileScreen(uid: String, onBack: () -> Unit, onOpen: (Int) -> Unit, onAchi
     val myPlanned = mine.filter { it.status == WatchStatus.PLANNED }.map { it.animeId }.toSet()
     val bothWant = entries.filter { it.status == WatchStatus.PLANNED && it.animeId in myPlanned }
     val myById = mine.associateBy { it.animeId }
-    val top = remember(entries) { topRated(entries) }
+    val top = remember(entries) { topRated(entries, Int.MAX_VALUE) }
     val bothWatching = entries.filter { it.status == WatchStatus.WATCHING && myById[it.animeId]?.status == WatchStatus.WATCHING }
 
     Column(Modifier.fillMaxSize().statusBarsPadding()) {
@@ -137,7 +137,7 @@ fun ProfileScreen(uid: String, onBack: () -> Unit, onOpen: (Int) -> Unit, onAchi
             }
             if (top.isNotEmpty()) {
                 item(span = { GridItemSpan(maxLineSpan) }) {
-                    TopTen(top, onOpen, if (top.size == 10) "Top ten" else "Top ${top.size}")
+                    TopTen(top, onOpen, "Ratings  ·  ${top.size}")
                 }
             }
             if (!isMe && bothWatching.isNotEmpty()) {

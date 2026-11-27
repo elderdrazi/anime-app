@@ -42,6 +42,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -157,6 +158,7 @@ private fun MainScaffold(pending: StateFlow<Intent?>, onHandled: () -> Unit) {
     }
     // The version whose banner was closed. It stays closed until the app is next opened.
     var bannerHidden by rememberSaveable { mutableStateOf<String?>(null) }
+    var discoverTaps by remember { mutableIntStateOf(0) }
 
     // Ask for notification permission once the account exists (Android 13+).
     val permission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) {}
@@ -197,7 +199,10 @@ private fun MainScaffold(pending: StateFlow<Intent?>, onHandled: () -> Unit) {
                             tabs.forEach { tab ->
                                 NavigationBarItem(
                                     selected = route == tab.route,
-                                    onClick = { nav.goTab(tab.route) },
+                                    onClick = {
+                                        // Tapping Discover while it's showing refreshes it and goes back to the top.
+                                        if (tab.route == "discover" && route == "discover") discoverTaps++ else nav.goTab(tab.route)
+                                    },
                                     icon = {
                                         if (tab.route == "inbox" && unread > 0) {
                                             BadgedBox(badge = { Badge(containerColor = Accent) { Text("$unread") } }) {
@@ -230,7 +235,7 @@ private fun MainScaffold(pending: StateFlow<Intent?>, onHandled: () -> Unit) {
             NavHost(nav, startDestination = "discover", modifier = Modifier.padding(inner)) {
                 val openAnime: (Int) -> Unit = { nav.navigate("anime/$it") }
                 val openUser: (String) -> Unit = { nav.navigate("user/$it") }
-                composable("discover") { DiscoverScreen(onOpen = openAnime) }
+                composable("discover") { DiscoverScreen(onOpen = openAnime, reselected = discoverTaps) }
                 composable("library") { LibraryScreen(onOpen = openAnime) }
                 composable("friends") { FriendsScreen(onOpenUser = openUser) }
                 composable("inbox") { InboxScreen(onOpen = openAnime, onOpenUser = openUser) }

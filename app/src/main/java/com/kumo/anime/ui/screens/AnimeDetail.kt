@@ -227,6 +227,15 @@ private fun DetailContent(anime: Anime, onOpenUser: (String) -> Unit) {
                     Text(meta, style = MaterialTheme.typography.bodySmall, color = TextDim)
                     val extra = listOfNotNull(anime.score?.let { "$it% rating" }, anime.studio).joinToString(" · ")
                     if (extra.isNotEmpty()) Text(extra, style = MaterialTheme.typography.bodySmall, color = TextDim)
+                    // Under AniList's score, what your own friends make of it.
+                    val picks by com.kumo.anime.Graph.social.friendRatings.collectAsStateWithLifecycle()
+                    picks[anime.id]?.let { p ->
+                        Text(
+                            if (p.count == 1) "@${p.names.first()} rates it ${p.average}"
+                            else "Friends rate it ${p.average} · ${p.count} ratings",
+                            style = MaterialTheme.typography.bodySmall, color = Accent, maxLines = 1,
+                        )
+                    }
                 }
             }
         }
